@@ -360,11 +360,12 @@ public actor PipelineCoordinator {
 
     private func ripProgress(jobID: JobID, progress: RipProgress) {
         guard let job = jobs[jobID] else { return }
-        // Coalesce UI updates to ~4 Hz: each one re-emits the whole job
-        // snapshot and re-renders the window tree, so a higher rate just
-        // backs up the main thread (and any second window then stutters).
+        // Coalesce UI updates to ~1 Hz: each one re-emits the whole job
+        // snapshot and re-renders every window observing the model, so a
+        // higher rate just backs up the main thread. A per-track rip takes
+        // minutes, so 1 Hz percentage updates are plenty.
         let now = ContinuousClock.now
-        guard now - lastProgressUpdate > .milliseconds(250) || progress.fraction == 1 else { return }
+        guard now - lastProgressUpdate > .milliseconds(1000) || progress.fraction == 1 else { return }
         lastProgressUpdate = now
         updateTrack(
             job,
