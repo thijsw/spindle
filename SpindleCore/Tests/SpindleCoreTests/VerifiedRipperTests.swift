@@ -37,8 +37,8 @@ private struct StaticCTDBVerifier: RipVerifier {
     /// CTDB entry whose track CRCs are those of the canonical (clean) audio.
     var canonicalEntry: CTDBEntry {
         let totalSamples = leadOut * 588
-        let prefix = 2940
-        let suffix = 2940 + totalSamples % 2940
+        let prefix = 5880
+        let suffix = 5880 + totalSamples % 5880
         let windows = [
             prefix * 4 ..< 150 * 2352,
             150 * 2352 ..< (totalSamples - suffix) * 4,

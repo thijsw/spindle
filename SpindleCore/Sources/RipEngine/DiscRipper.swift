@@ -116,11 +116,15 @@ public struct DiscRipper: Sendable {
             tunedConfig.chunkSectors /= 2
         }
 
-        // CTDB skip windows: 2940 samples (5 sectors) into the first track,
-        // and 2940 + (disc-length remainder mod 2940) before the lead-out.
+        // CTDB skip windows (calibrated against the live database with a
+        // real disc, confidence ~2600): one full stride (5880 samples) is
+        // skipped at the disc start, and one stride plus the disc-length
+        // remainder (5880 + total % 5880) before the lead-out — matching
+        // CUETools' "stridecount = total/stride − 2, minus one for leadin
+        // and one for leadout".
         let totalSamples = audioEnd * 588
-        let ctdbPrefix = 2940
-        let ctdbSuffix = 2940 + totalSamples % 2940
+        let ctdbPrefix = 5880
+        let ctdbSuffix = 5880 + totalSamples % 5880
         let firstAudioStart = audioTracks[0].startLBA * 588
         let discCRC = DiscCRCBox(
             coveredBytes: (firstAudioStart + ctdbPrefix) * 4 ..< (totalSamples - ctdbSuffix) * 4,

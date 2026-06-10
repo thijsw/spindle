@@ -46,8 +46,8 @@ import Verification
 
         // Database entries carry CRCs of the canonical (corrected) audio.
         let totalSamples = leadOut * 588
-        let prefix = 2940
-        let suffix = 2940 + totalSamples % 2940
+        let prefix = 5880
+        let suffix = 5880 + totalSamples % 5880
         let windows = [
             prefix * 4 ..< 120 * 2352, // track 1 (CTDB skip applied)
             120 * 2352 ..< (totalSamples - suffix) * 4, // track 2 (suffix applied)

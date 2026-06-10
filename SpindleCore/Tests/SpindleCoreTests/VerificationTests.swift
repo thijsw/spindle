@@ -79,8 +79,8 @@ toc="0:9550:25737:39147" trackcrcs="6c249dd1 d18c2d34 c69d5d72 4902c585" />
 @Suite struct CTDBChecksumSemanticsTests {
     // Toy stream large enough that the covered window is non-empty.
     let totalSamples = 30 * 588
-    var prefix: Int { 2940 }
-    var suffix: Int { 2940 + totalSamples % 2940 }
+    var prefix: Int { 5880 }
+    var suffix: Int { 5880 + totalSamples % 5880 }
     var covered: Range<Int> { prefix * 4 ..< (totalSamples - suffix) * 4 }
 
     var bytes: Data {

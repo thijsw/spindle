@@ -700,6 +700,64 @@ case "bench-sustained":
         }
     }
 
+case "calibrate-skips":
+    // Hidden diagnostic: brute-forces the CTDB edge-skip parameters against
+    // a known-good rip + database entries, to pin down the exact prefix
+    // (first track) and suffix (last track) semantics.
+    let rest = Array(arguments.dropFirst())
+    guard rest.count >= 2, let knownOffset = Int(rest[1]) else {
+        fail("usage: calibrate-skips <wavdir> <offset> [disk]")
+    }
+    let wavDir = rest[0]
+    let bsd = resolveDisc(rest.dropFirst(2).first)
+    let drive = try CDDrive(bsdName: bsd)
+    let toc = try TOC.parse(fullTOC: try await drive.readFullTOC())
+    let audio = toc.audioTracks
+
+    let wavURLs = (try? FileManager.default.contentsOfDirectory(
+        at: URL(fileURLWithPath: wavDir), includingPropertiesForKeys: nil
+    ))?.filter { $0.pathExtension == "wav" }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+    guard wavURLs.count == audio.count else { fail("WAV count mismatch") }
+
+    let ctdb = CTDBClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+    let entries = try await ctdb.lookup(toc: toc)
+    print("\(entries.count) CTDB entries.")
+
+    let firstWAV = try Data(contentsOf: wavURLs[0], options: .alwaysMapped).dropFirst(44)
+    let lastWAV = try Data(contentsOf: wavURLs[wavURLs.count - 1], options: .alwaysMapped).dropFirst(44)
+    let lastStart = audio[audio.count - 1].startLBA
+    let totalSamples = (toc.sessionLeadOuts[audio[0].session] ?? toc.leadOutLBA) * 588
+    let track2Start = audio[1].startLBA
+
+    print("Scanning prefix candidates for track 1 (offset \(knownOffset))…")
+    for prefix in stride(from: 0, through: 35280, by: 147) {
+        let startByte = (prefix + knownOffset) * 4
+        let endByte = (track2Start * 588 + knownOffset) * 4
+        guard startByte >= 0, endByte <= firstWAV.count else { continue }
+        let crc = CRC32.checksum(firstWAV.subdata(
+            in: firstWAV.startIndex + startByte ..< firstWAV.startIndex + endByte
+        ))
+        for entry in entries where !entry.trackCRC32s.isEmpty && entry.trackCRC32s[0] == crc {
+            print(String(format: "  ✓ prefix %5d samples matches entry %@ (confidence %d)", prefix, entry.id, entry.confidence))
+        }
+    }
+
+    print("Scanning suffix candidates for track \(audio.count)…")
+    for suffix in stride(from: 0, through: 11760, by: 294) {
+        let startByte = (lastStart * 588 + knownOffset - lastStart * 588) * 4 // 0 within last WAV, shifted below
+        let windowStart = knownOffset * 4
+        let windowEnd = (totalSamples - suffix + knownOffset - lastStart * 588) * 4
+        guard windowStart >= 0, windowEnd <= lastWAV.count, windowEnd > windowStart else { continue }
+        _ = startByte
+        let crc = CRC32.checksum(lastWAV.subdata(
+            in: lastWAV.startIndex + windowStart ..< lastWAV.startIndex + windowEnd
+        ))
+        for entry in entries where entry.trackCRC32s.count == audio.count && entry.trackCRC32s[audio.count - 1] == crc {
+            print(String(format: "  ✓ suffix %5d samples matches entry %@ (confidence %d)", suffix, entry.id, entry.confidence))
+        }
+    }
+    print("Done. (Step 294 = quarter sector; rerun with finer steps around hits if needed.)")
+
 case "push":
     let rest = Array(arguments.dropFirst())
     var sourceDir: String?
