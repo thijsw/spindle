@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ImageIO
 import Observation
 import SpindleCore
 import UserNotifications
@@ -108,10 +109,15 @@ final class AppModel {
             postNotification(title: title, body: body)
 
         case .artLoaded(let jobID, let data):
-            // Decode the JPEG once, off the main thread, then cache the image.
+            // Decode AND downscale once, off the main thread. The original is
+            // ~1200 px; displayed at 220 pt it would otherwise be resampled
+            // from 1.4 MP on every render (cover art re-renders with each
+            // progress tick), which pegs the main thread. A 480 px thumbnail
+            // resamples in microseconds. (FLAC embedding uses the raw bytes,
+            // not this image, so the thumbnail loses nothing.)
             Task {
                 let image = await Task.detached(priority: .userInitiated) {
-                    NSImage(data: data)
+                    Self.thumbnail(from: data, maxPixel: 480)
                 }.value
                 if let image { coverArt[jobID] = image }
             }
@@ -144,6 +150,21 @@ final class AppModel {
         for entry in entries {
             try? FileManager.default.removeItem(at: entry)
         }
+    }
+
+    /// Decodes image bytes and downscales to fit `maxPixel`, preserving
+    /// aspect ratio. Returns a bitmap-backed NSImage cheap to draw.
+    nonisolated private static func thumbnail(from data: Data, maxPixel: Int) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 
     private func refreshHistory() async {

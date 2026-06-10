@@ -360,9 +360,11 @@ public actor PipelineCoordinator {
 
     private func ripProgress(jobID: JobID, progress: RipProgress) {
         guard let job = jobs[jobID] else { return }
-        // Throttle UI updates to ~10 Hz.
+        // Coalesce UI updates to ~4 Hz: each one re-emits the whole job
+        // snapshot and re-renders the window tree, so a higher rate just
+        // backs up the main thread (and any second window then stutters).
         let now = ContinuousClock.now
-        guard now - lastProgressUpdate > .milliseconds(100) || progress.fraction == 1 else { return }
+        guard now - lastProgressUpdate > .milliseconds(250) || progress.fraction == 1 else { return }
         lastProgressUpdate = now
         updateTrack(
             job,
