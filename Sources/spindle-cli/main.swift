@@ -4,6 +4,7 @@ import Foundation
 import Metadata
 import Naming
 import RipEngine
+import Transfer
 import Verification
 
 // Debug/development CLI. Each milestone adds a subcommand so every subsystem
@@ -36,6 +37,13 @@ commands:
     --format <f>    flac, alac, or both (default: flac)
     --toc "<str>"   MusicBrainz TOC string for metadata lookup
     --pick <n>      candidate to use when several match (default: best)
+
+  push <dir> [options]
+                    upload a directory tree to a destination
+    --to <dest>     folder path, or sftp://user@host[:port]/remote/path
+    --key <file>    SSH private key (default: password via
+                    SPINDLE_SFTP_PASSWORD or saved Keychain entry)
+    --save-password store the password in the Keychain for later runs
 
 [disk] is a BSD name like disk4; defaults to the first CD medium found.
 """
@@ -517,6 +525,99 @@ case "encode":
         try art.data.write(to: albumFolder.appendingPathComponent("cover.\(art.fileExtension)"))
         print("  cover.\(art.fileExtension)")
     }
+
+case "push":
+    let rest = Array(arguments.dropFirst())
+    var sourceDir: String?
+    var destSpec: String?
+    var keyFile: String?
+    var savePassword = false
+
+    var i = 0
+    while i < rest.count {
+        switch rest[i] {
+        case "--to":
+            i += 1
+            guard i < rest.count else { fail("--to needs a destination") }
+            destSpec = rest[i]
+        case "--key":
+            i += 1
+            guard i < rest.count else { fail("--key needs a file path") }
+            keyFile = rest[i]
+        case "--save-password":
+            savePassword = true
+        default:
+            if sourceDir == nil, !rest[i].hasPrefix("--") {
+                sourceDir = rest[i]
+            } else {
+                fail("Unknown option: \(rest[i])")
+            }
+        }
+        i += 1
+    }
+
+    guard let sourceDir, let destSpec else { fail("push needs <dir> and --to <dest>") }
+    let sourceRoot = URL(fileURLWithPath: sourceDir)
+
+    let destination: any Destination
+    if destSpec.hasPrefix("sftp://") {
+        guard let url = URL(string: destSpec),
+              let host = url.host,
+              let user = url.user
+        else { fail("SFTP destination must look like sftp://user@host[:port]/remote/path") }
+        var config = SFTPConfig(
+            host: host,
+            port: url.port ?? 22,
+            username: user,
+            remotePath: url.path.isEmpty ? "." : url.path
+        )
+        var secret = ProcessInfo.processInfo.environment["SPINDLE_SFTP_PASSWORD"]
+            ?? KeychainStore.load(account: config.keychainAccount)
+        if let keyFile {
+            config.authentication = .privateKeyFile(path: keyFile)
+        } else if secret == nil {
+            print("Password for \(config.keychainAccount): ", terminator: "")
+            secret = readLine(strippingNewline: true)
+        }
+        if savePassword, let secret, case .password = config.authentication {
+            try KeychainStore.save(secret: secret, account: config.keychainAccount)
+            print("Password saved to Keychain.")
+        }
+        destination = SFTPDestination(config: config, secret: secret)
+    } else {
+        destination = LocalFolderDestination(path: destSpec)
+    }
+
+    let testResult = await destination.test()
+    switch testResult {
+    case .success(let message): print(message)
+    case .failure(let error): fail("Destination test failed: \(error)")
+    }
+
+    let resolvedRoot = sourceRoot.resolvingSymlinksInPath().path
+    let enumerator = FileManager.default.enumerator(
+        at: sourceRoot, includingPropertiesForKeys: [.isRegularFileKey]
+    )
+    var files: [(URL, String)] = []
+    while let item = enumerator?.nextObject() as? URL {
+        guard (try? item.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+              !item.lastPathComponent.hasPrefix(".")
+        else { continue }
+        let itemPath = item.resolvingSymlinksInPath().path
+        guard itemPath.hasPrefix(resolvedRoot + "/") else { continue }
+        files.append((item, String(itemPath.dropFirst(resolvedRoot.count + 1))))
+    }
+    files.sort { $0.1 < $1.1 }
+    guard !files.isEmpty else { fail("Nothing to upload in \(sourceDir)") }
+
+    print("Uploading \(files.count) files…")
+    let pushStarted = Date()
+    for (url, relative) in files {
+        try await destination.upload(file: url, toRelativePath: relative, progress: nil)
+        print("  \(relative)")
+    }
+    await destination.close()
+    print(String(format: "Uploaded in %.1fs.", -pushStarted.timeIntervalSinceNow))
 
 default:
     print(usage)
