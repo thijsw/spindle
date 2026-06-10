@@ -61,7 +61,9 @@ public struct DiscRipper: Sendable {
     public struct DiscRipResult: Sendable {
         public let tracks: [RippedTrack]
         /// CTDB whole-disc CRC32 (skip-gated), for matching entry `crc32`.
+        /// Only meaningful when the whole disc was ripped in one go.
         public let ctdbDiscCRC32: UInt32
+        public let isCompleteDisc: Bool
         public let usedC2: Bool
     }
 
@@ -73,8 +75,11 @@ public struct DiscRipper: Sendable {
         try await ripDisc(toc: toc, to: stagingDirectory, progress: progress).tracks
     }
 
+    /// Rips the disc's audio tracks; `only` restricts to a subset (used for
+    /// secure re-rips of tracks that failed verification).
     public func ripDisc(
         toc: TOC,
+        only: Set<Int>? = nil,
         to stagingDirectory: URL,
         progress: @Sendable @escaping (RipProgress) -> Void = { _ in }
     ) async throws -> DiscRipResult {
@@ -128,8 +133,13 @@ public struct DiscRipper: Sendable {
             startBytePosition: firstAudioStart * 4
         )
 
+        let selected = audioTracks.filter { only?.contains($0.number) ?? true }
+        let isCompleteDisc = selected.count == audioTracks.count
+        let tap: @Sendable (Data) -> Void = { discCRC.update($0) }
+        let audioTap: (@Sendable (Data) -> Void)? = isCompleteDisc ? tap : nil
+
         var results: [RippedTrack] = []
-        for track in audioTracks {
+        for track in selected {
             let wavURL = stagingDirectory.appendingPathComponent(
                 String(format: "track%02d.wav", track.number)
             )
@@ -141,11 +151,16 @@ public struct DiscRipper: Sendable {
                 ctdbLeadingSkip: track.number == audioTracks.first?.number ? ctdbPrefix : 0,
                 ctdbTrailingSkip: track.number == audioTracks.last?.number ? ctdbSuffix : 0,
                 to: wavURL,
-                onAudio: { discCRC.update($0) },
+                onAudio: audioTap,
                 progress: progress
             )
             results.append(ripped)
         }
-        return DiscRipResult(tracks: results, ctdbDiscCRC32: discCRC.value, usedC2: needsC2)
+        return DiscRipResult(
+            tracks: results,
+            ctdbDiscCRC32: discCRC.value,
+            isCompleteDisc: isCompleteDisc,
+            usedC2: needsC2
+        )
     }
 }

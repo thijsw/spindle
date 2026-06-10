@@ -50,6 +50,13 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
 
 ## Hard-won gotchas
 
+- The Apple SuperDrive (HL-DT-ST GX50N mechanism) ACCEPTS C2 read requests
+  but returns garbage for the entire transfer — the ioctl succeeds, the data
+  is junk. Any C2 probe must compare the audio portion against a plain read
+  (DiscRipper.probeC2 does). Sustained throughput on this drive: ~6.8× burst,
+  ~3.4× compare-mode secure. It also reports 10× via DKIOCCDGETSPEED while
+  idling far slower until reads stream continuously.
+
 - `AVAudioFile.read(into:)` throws a spurious `nilError` at exact EOF — every
   read loop must guard `framePosition < length`. Already handled in Encoding;
   do the same in any new audio loop.

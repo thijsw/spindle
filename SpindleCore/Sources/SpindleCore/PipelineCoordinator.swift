@@ -302,15 +302,30 @@ public actor PipelineCoordinator {
             let config = preferences.ripConfiguration(
                 forDrive: identity?.offsetKey
             )
-            let ripper = DiscRipper(device: device, config: config)
-            let result = try await ripper.ripDisc(toc: toc, to: job.stagingDir) { [weak self] progress in
+            // Verify-first: burst rip, confirm against CTDB, securely re-rip
+            // only what the database can't vouch for.
+            let ripper = VerifiedRipper(
+                device: device,
+                configuration: config,
+                verifier: dependencies.verifier
+            )
+            let outcome = try await ripper.rip(toc: toc, to: job.stagingDir) { [weak self] progress in
                 guard let self else { return }
                 Task { await self.ripProgress(jobID: jobID, progress: progress) }
             }
-            job.rippedTracks = result.tracks
-            job.ctdbDiscCRC = result.ctdbDiscCRC32
-            for track in result.tracks {
+            job.rippedTracks = outcome.tracks
+            job.snapshot.verificationSummary = outcome.verification?.summary ?? outcome.strategy
+            for track in outcome.tracks {
                 updateTrack(job, number: track.trackNumber, status: .ripped)
+            }
+            if let verification = outcome.verification {
+                for (number, verdict) in verification.trackVerdicts {
+                    if case .accuratelyRipped = verdict {
+                        updateTrack(job, number: number, status: .verified(true))
+                    } else if case .differs = verdict {
+                        updateTrack(job, number: number, status: .verified(false))
+                    }
+                }
             }
             setStage(job, .ripped)
 
@@ -415,27 +430,9 @@ public actor PipelineCoordinator {
     // MARK: Post-rip stages (detached from the rip lane)
 
     private func runProcessingStages(jobID: JobID) async {
-        guard let job = jobs[jobID], let toc = job.toc else { return }
-
-        // Verification (non-fatal).
-        if let verifier = dependencies.verifier {
-            let checksums = job.rippedTracks.reduce(into: [Int: TrackChecksums]()) {
-                $0[$1.trackNumber] = $1.checksums
-            }
-            if let result = try? await verifier.verify(
-                toc: toc, trackChecksums: checksums, ctdbDiscCRC32: job.ctdbDiscCRC
-            ) {
-                job.snapshot.verificationSummary = result.summary
-                for (number, verdict) in result.trackVerdicts {
-                    if case .accuratelyRipped = verdict {
-                        updateTrack(job, number: number, status: .verified(true))
-                    } else if case .differs = verdict {
-                        updateTrack(job, number: number, status: .verified(false))
-                    }
-                }
-                publish(job)
-            }
-        }
+        guard let job = jobs[jobID] else { return }
+        // Verification already happened inside the verify-first rip
+        // (drive-bound, so failed tracks could be re-ripped before eject).
 
         // Wait for metadata if the picker is still open.
         if job.resolvedAlbum == nil {

@@ -356,16 +356,22 @@ case "rip":
     }
 
     let config = RipConfiguration(mode: mode, sampleOffset: offset)
-    let ripper = DiscRipper(device: drive, config: config)
     let started = Date()
-    print("Ripping \(toc.audioTracks.count) tracks to \(outDir.path) (\(mode == .burst ? "burst" : "secure"))…")
+    print("Ripping \(toc.audioTracks.count) tracks to \(outDir.path) (\(mode == .burst ? "burst" : "verify-first secure"))…")
+
+    // The CTDB TOC must describe the whole disc, so single-track rips skip
+    // database verification.
+    let verifier: CTDBVerifier? = onlyTrack == nil
+        ? CTDBVerifier(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+        : nil
 
     let printer = ProgressPrinter()
-    let result = try await ripper.ripDisc(toc: toc, to: outDir) { progress in
+    let ripper = VerifiedRipper(device: drive, configuration: config, verifier: verifier)
+    let outcome = try await ripper.rip(toc: toc, to: outDir) { progress in
         printer.print(progress)
     }
     print("")
-    for track in result.tracks {
+    for track in outcome.tracks {
         var line = String(
             format: "track %02d  crc32 %08X  ARv1 %08X  ARv2 %08X  CTDB %08X",
             track.trackNumber,
@@ -374,39 +380,30 @@ case "rip":
             track.checksums.accurateRipV2,
             track.checksums.ctdbCRC32
         )
-        if track.rereads > 0 { line += "  (\(track.rereads) re-reads)" }
+        var notes: [String] = []
+        if outcome.reRippedTracks.contains(track.trackNumber) { notes.append("secure re-rip") }
+        if track.rereads > 0 { notes.append("\(track.rereads) re-reads") }
+        if !notes.isEmpty { line += "  (\(notes.joined(separator: ", ")))" }
         if !track.unrecoverableSectors.isEmpty {
             line += "  ⚠︎ \(track.unrecoverableSectors.count) unrecoverable sectors"
         }
         print(line)
     }
-    print(String(format: "Ripped in %.1fs.", -started.timeIntervalSinceNow))
+    print(String(format: "Ripped in %.1fs. %@", -started.timeIntervalSinceNow, outcome.strategy))
 
-    if onlyTrack == nil {
-        do {
-            let verifier = CTDBVerifier(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
-            let checksums = result.tracks.reduce(into: [Int: TrackChecksums]()) {
-                $0[$1.trackNumber] = $1.checksums
+    if let verification = outcome.verification {
+        if let match = verification.discMatch {
+            print("Whole-disc CRC matches CTDB entry \(match.id) (confidence \(match.confidence)).")
+        }
+        for (track, verdict) in verification.trackVerdicts.sorted(by: { $0.key < $1.key }) {
+            switch verdict {
+            case .accuratelyRipped(let confidence):
+                print(String(format: "  track %02d  ✓ verified (confidence %d)", track, confidence))
+            case .differs(let best):
+                print(String(format: "  track %02d  ✗ differs from database (best confidence %d) — check drive offset", track, best))
+            case .notInDatabase:
+                print(String(format: "  track %02d  not in database", track))
             }
-            let verification = try await verifier.verify(
-                toc: toc, trackChecksums: checksums, ctdbDiscCRC32: result.ctdbDiscCRC32
-            )
-            print(verification.summary)
-            if let match = verification.discMatch {
-                print("Whole-disc CRC matches CTDB entry \(match.id) (confidence \(match.confidence)).")
-            }
-            for (track, verdict) in verification.trackVerdicts.sorted(by: { $0.key < $1.key }) {
-                switch verdict {
-                case .accuratelyRipped(let confidence):
-                    print(String(format: "  track %02d  ✓ verified (confidence %d)", track, confidence))
-                case .differs(let best):
-                    print(String(format: "  track %02d  ✗ differs from database (best confidence %d) — check drive offset", track, best))
-                case .notInDatabase:
-                    print(String(format: "  track %02d  not in database", track))
-                }
-            }
-        } catch {
-            print("CTDB verification unavailable: \(error)")
         }
     }
 
