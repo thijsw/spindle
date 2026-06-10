@@ -40,6 +40,19 @@ public struct VerifiedRipper: Sendable {
     ) async throws -> Outcome {
         let secureRequested: Bool = if case .secure = configuration.mode { true } else { false }
 
+        // Without a verifier, a fast first pass proves nothing — go straight
+        // to the secure engine instead of ripping everything twice.
+        if secureRequested, verifier == nil {
+            let secure = try await DiscRipper(device: device, config: configuration)
+                .ripDisc(toc: toc, to: stagingDirectory, progress: progress)
+            return Outcome(
+                tracks: secure.tracks,
+                verification: nil,
+                reRippedTracks: [],
+                strategy: "Secure rip (no verification database available)"
+            )
+        }
+
         // Pass 1: burst, regardless of mode — the database may spare us
         // the slow machinery entirely.
         var burstConfiguration = configuration

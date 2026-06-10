@@ -16,14 +16,23 @@ actor MockCDDevice: CDDeviceIO {
     let leadOut: Int
     var supportsC2: Bool
     private var flaky: [Int: FlakySector]
+    /// Sectors whose reads always fail with EIO (hard damage).
+    private let errorSectors: Set<Int>
     private(set) var readCount = 0
     private var garbageSeed = 0
     private let tocData: Data
 
-    init(leadOut: Int, supportsC2: Bool = true, flaky: [Int: FlakySector] = [:], tocData: Data = Data()) {
+    init(
+        leadOut: Int,
+        supportsC2: Bool = true,
+        flaky: [Int: FlakySector] = [:],
+        errorSectors: Set<Int> = [],
+        tocData: Data = Data()
+    ) {
         self.leadOut = leadOut
         self.supportsC2 = supportsC2
         self.flaky = flaky
+        self.errorSectors = errorSectors
         self.tocData = tocData
     }
 
@@ -45,6 +54,9 @@ actor MockCDDevice: CDDeviceIO {
             throw DiscDriveError.ioctlFailed(name: "DKIOCCDREAD", code: 22) // EINVAL
         }
         guard range.lowerBound >= 0, range.upperBound <= leadOut else {
+            throw DiscDriveError.ioctlFailed(name: "DKIOCCDREAD", code: 5) // EIO
+        }
+        if !errorSectors.isDisjoint(with: range) {
             throw DiscDriveError.ioctlFailed(name: "DKIOCCDREAD", code: 5) // EIO
         }
         readCount += 1

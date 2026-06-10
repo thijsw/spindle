@@ -159,6 +159,28 @@ private func wavData(_ url: URL) -> Data {
         #expect(tracks[0].unrecoverableSectors == [10])
     }
 
+    @Test func hardReadErrorsAreBisectedNotFatal() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Sector 90 always fails with EIO: chunks containing it must be
+        // bisected so every other sector still rips exactly, the bad sector
+        // is zero-filled, and the rip completes instead of aborting.
+        let device = MockCDDevice(leadOut: leadOut, errorSectors: [90])
+        let config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2), chunkSectors: 25)
+        let tracks = try await DiscRipper(device: device, config: config).rip(toc: toc, to: dir)
+
+        #expect(tracks[0].unrecoverableSectors == [90], "damaged sector reported")
+
+        var expected = expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 0, leadOut: leadOut)
+        expected.replaceSubrange(90 * 2352 ..< 91 * 2352, with: Data(count: 2352))
+        #expect(wavData(tracks[0].wavURL) == expected, "all healthy sectors exact, bad sector zero-filled")
+        #expect(
+            wavData(tracks[1].wavURL) == expectedAudio(trackSectors: 150 ..< 400, sampleOffset: 0, leadOut: leadOut),
+            "other track unaffected"
+        )
+    }
+
     @Test func cleanDiscRipsAreDeterministic() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
