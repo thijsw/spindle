@@ -357,20 +357,22 @@ public actor PipelineCoordinator {
     }
 
 
-    private var rippingTrackNumber: Int?
+    private var lastProgressUpdate = ContinuousClock.now
 
     private func ripProgress(jobID: JobID, progress: RipProgress) {
         guard let job = jobs[jobID] else { return }
-        // Only publish on the discrete transition into a new track — never
-        // per-fraction. Re-emitting the whole job snapshot on every progress
-        // tick re-renders every window observing the model (main, Settings,
-        // menu bar) and saturates the main thread. A rip is minutes long;
-        // the UI shows an indeterminate "ripping" indicator on the active
-        // track and advances track-by-track, which is all the model churn
-        // the windows can afford.
-        guard progress.trackNumber != rippingTrackNumber, progress.fraction < 1 else { return }
-        rippingTrackNumber = progress.trackNumber
-        updateTrack(job, number: progress.trackNumber, status: .ripping)
+        // Throttle the live percentage to ~4 Hz. This re-renders the main
+        // window's track table (cheap), but must NOT churn the menu-bar
+        // scene — see AppModel.menuBarSummary, which only changes on coarse
+        // stage transitions, not on these ticks.
+        let now = ContinuousClock.now
+        guard now - lastProgressUpdate > .milliseconds(250) || progress.fraction >= 1 else { return }
+        lastProgressUpdate = now
+        updateTrack(
+            job,
+            number: progress.trackNumber,
+            status: progress.fraction >= 1 ? .ripped : .ripping(progress.fraction)
+        )
     }
 
     // MARK: Identification (concurrent with rip)

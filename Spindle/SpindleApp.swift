@@ -40,19 +40,12 @@ struct MenuBarContent: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        if let job = model.activeJob {
-            Text(job.displayTitle)
-            Text(job.stage.label)
-        } else {
-            Text("Waiting for a disc")
-        }
+        // Reads only the coarse summary string (changes on stage
+        // transitions), never the per-tick job snapshots — otherwise every
+        // progress update rebuilds this NSStatusItem-backed scene and hangs
+        // the app.
+        Text(model.menuBarSummary)
         Divider()
-        ForEach(model.backgroundJobs) { job in
-            Text("\(job.displayTitle) — \(job.stage.label)")
-        }
-        if !model.backgroundJobs.isEmpty {
-            Divider()
-        }
         SettingsLink {
             Text("Settings…")
         }

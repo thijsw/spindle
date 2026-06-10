@@ -228,8 +228,8 @@ struct TrackRow: View {
         case .waiting:
             Image(systemName: "circle.dotted")
                 .foregroundStyle(.quaternary)
-        case .ripping:
-            ProgressView()
+        case .ripping(let fraction):
+            ProgressView(value: fraction)
                 .progressViewStyle(.circular)
                 .controlSize(.small)
         case .ripped:

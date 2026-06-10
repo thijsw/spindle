@@ -13,6 +13,25 @@ final class AppModel {
     private(set) var coverArt: [JobID: NSImage] = [:]
 
     func coverArt(for id: JobID) -> NSImage? { coverArt[id] }
+
+    /// A coarse one-line status for the menu bar. The menu bar is a Scene
+    /// backed by an NSStatusItem, and rebuilding that scene is expensive — so
+    /// it must observe ONLY this string, which is reassigned just on stage
+    /// transitions, never on per-fraction progress ticks. (Letting the menu
+    /// read `jobs` directly rebuilt the status item ~every tick and hung the
+    /// whole app whenever a second window was also open.)
+    private(set) var menuBarSummary = "Waiting for a disc"
+
+    private func refreshMenuBarSummary() {
+        let active = jobs.filter { !$0.stage.isTerminal }
+        let summary: String
+        if let job = active.last {
+            summary = "\(job.displayTitle) — \(job.stage.label)"
+        } else {
+            summary = "Waiting for a disc"
+        }
+        if summary != menuBarSummary { menuBarSummary = summary }
+    }
     private(set) var history: [JobRecord] = []
     private(set) var startupError: String?
 
@@ -94,6 +113,7 @@ final class AppModel {
                 if pickerJobID == snapshot.id { pickerJobID = nil }
                 Task { await self.refreshHistory() }
             }
+            refreshMenuBarSummary()
             // Keep the Mac awake while any disc is in flight.
             if hasActiveJobs {
                 powerAssertion.activate()
