@@ -19,7 +19,9 @@ struct SettingsView: View {
             MetadataSettingsPane()
                 .tabItem { Label("Metadata", systemImage: "music.note.list") }
         }
-        .frame(width: 540)
+        // A fixed height with internally-scrolling forms: the Destination
+        // pane (SFTP fields + footers) is the tallest and was clipping.
+        .frame(width: 560, height: 560)
     }
 }
 
@@ -160,7 +162,7 @@ struct DestinationSettingsPane: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear(perform: loadFromPreferences)
+        .task(loadFromPreferences)
     }
 
     @ViewBuilder private var sftpSection: some View {
@@ -220,7 +222,7 @@ struct DestinationSettingsPane: View {
         )
     }
 
-    private func loadFromPreferences() {
+    @Sendable private func loadFromPreferences() async {
         switch model.preferences.destination {
         case .localFolder(let path):
             folderPath = path
@@ -233,7 +235,12 @@ struct DestinationSettingsPane: View {
                 usesKeyFile = true
                 sftpKeyFile = path
             }
-            sftpPassword = KeychainStore.load(account: config.keychainAccount) ?? ""
+            // SecItemCopyMatching blocks the calling thread until any
+            // Keychain access dialog is answered — never on the main thread.
+            let account = config.keychainAccount
+            sftpPassword = await Task.detached(priority: .utility) {
+                KeychainStore.load(account: account) ?? ""
+            }.value
         case nil:
             break
         }
@@ -364,16 +371,23 @@ struct RippingSettingsPane: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear(perform: detectDrive)
+        .task(detectDrive)
     }
 
-    private func detectDrive() {
-        guard let bsd = DiscDrive.DiscEnumerator.presentCDMedia().first,
-              let identity = DiscDrive.DiscEnumerator.driveIdentity(forMediaBSDName: bsd)
-        else { return }
-        driveName = identity.displayName
-        driveKey = identity.offsetKey
-        suggestedOffset = DiscDrive.DriveOffsetTable.suggestion(for: identity)?.samples
+    /// IOKit registry traversal is synchronous and can stall for seconds
+    /// while a rip is holding the drive — so it must never run on the main
+    /// thread, or the whole app beach-balls.
+    @Sendable private func detectDrive() async {
+        let found = await Task.detached(priority: .utility) { () -> (String, String, Int?)? in
+            guard let bsd = DiscDrive.DiscEnumerator.presentCDMedia().first,
+                  let identity = DiscDrive.DiscEnumerator.driveIdentity(forMediaBSDName: bsd)
+            else { return nil }
+            return (identity.displayName, identity.offsetKey, DiscDrive.DriveOffsetTable.suggestion(for: identity)?.samples)
+        }.value
+        guard let found else { return }
+        driveName = found.0
+        driveKey = found.1
+        suggestedOffset = found.2
     }
 }
 
