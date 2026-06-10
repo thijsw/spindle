@@ -21,6 +21,17 @@ enum Harness {
         }
     }
 
+    static func asyncSuite(_ name: String, _ body: () async throws -> Void) async {
+        currentSuite = name
+        print("— \(name)")
+        do {
+            try await body()
+        } catch {
+            failed += 1
+            print("  ✗ suite threw: \(error)")
+        }
+    }
+
     static func expect(
         _ condition: @autoclosure () -> Bool,
         _ label: String,
