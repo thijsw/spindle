@@ -56,9 +56,16 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
   reads take ~2.7 s each). No probe catches this — the runtime flag-rate
   monitor in TrackRipper (>5% flagged ⇒ C2DistrustError ⇒ compare-mode
   restart, verdict persisted in Preferences.drivesWithUnreliableC2) is the
-  real defense. Confirmed drive offset for this unit: +6 (CTDB confidence
-  ~29k via scan-offset). Sustained throughput: ~6.8× burst, ~3.4×
-  compare-mode secure; track 1/13 of the test disc have genuine edge damage.
+  real defense. Confirmed drive offset for this unit: +6 (13/13 tracks,
+  CTDB confidence 34,230 via scan-offset). Sustained throughput: ~6.8×
+  burst, ~3.4× compare-mode secure.
+- CTDB edge windows (calibrated against the live DB, confidence ~2600 —
+  don't re-derive from the GPL source, its units are ambiguous): first track
+  skips ONE FULL stride (5880 samples); last track ends 5880 +
+  (totalSamples % 5880) before lead-out; middle tracks are exact
+  [start, nextStart). End-to-end hardware validation passed: full disc
+  ripped + 13/13 CTDB-verified in 5.3 min, encoded to a tagged FLAC
+  library.
 - Never diagnose drive stalls by theorizing: `sample <pid> 5` while hung
   shows exactly which engine path is blocked in ioctl.
 
