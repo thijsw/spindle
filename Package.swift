@@ -31,21 +31,32 @@ let package = Package(
 
         .target(name: "RipEngine", dependencies: ["DiscDrive"]),
 
+        .target(
+            name: "Encoding",
+            dependencies: ["Metadata"],
+            linkerSettings: [
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("CoreMedia"),
+            ]
+        ),
+
+        .target(name: "Naming", dependencies: ["Metadata"]),
+
         .executableTarget(
             name: "spindle-cli",
-            dependencies: ["DiscDrive", "Metadata", "RipEngine"]
+            dependencies: ["DiscDrive", "Metadata", "RipEngine", "Encoding", "Naming"]
         ),
 
         .target(
             name: "SpindleCore",
-            dependencies: ["DiscDrive", "Metadata", "RipEngine"]
+            dependencies: ["DiscDrive", "Metadata", "RipEngine", "Encoding", "Naming"]
         ),
 
         // The CLT toolchain ships no XCTest/Swift Testing, so tests run as a
         // plain executable: `swift run spindle-tests`.
         .executableTarget(
             name: "spindle-tests",
-            dependencies: ["DiscDrive", "Metadata", "RipEngine", "SpindleCore"]
+            dependencies: ["DiscDrive", "Metadata", "RipEngine", "Encoding", "Naming", "SpindleCore"]
         ),
     ]
 )

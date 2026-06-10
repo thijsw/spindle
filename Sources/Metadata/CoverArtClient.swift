@@ -11,6 +11,12 @@ public struct CoverArt: Sendable {
     public let mimeType: String
     public let source: Source
 
+    public init(data: Data, mimeType: String, source: Source) {
+        self.data = data
+        self.mimeType = mimeType
+        self.source = source
+    }
+
     public var fileExtension: String {
         switch mimeType {
         case "image/png": "png"

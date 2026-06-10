@@ -1,6 +1,8 @@
 import DiscDrive
+import Encoding
 import Foundation
 import Metadata
+import Naming
 import RipEngine
 
 // Debug/development CLI. Each milestone adds a subcommand so every subsystem
@@ -26,6 +28,13 @@ commands:
     --fast          burst mode (default: secure)
     --offset <n>    sample offset correction (default: 0)
     --track <n>     rip a single track
+
+  encode <wavdir> [options]
+                    encode staged track WAVs (track01.wav…) to FLAC/ALAC
+    --out <dir>     library root (default: ./library)
+    --format <f>    flac, alac, or both (default: flac)
+    --toc "<str>"   MusicBrainz TOC string for metadata lookup
+    --pick <n>      candidate to use when several match (default: best)
 
 [disk] is a BSD name like disk4; defaults to the first CD medium found.
 """
@@ -356,6 +365,128 @@ case "rip":
         print(line)
     }
     print(String(format: "Done in %.1fs.", -started.timeIntervalSinceNow))
+
+case "encode":
+    let rest = Array(arguments.dropFirst())
+    var wavDir: String?
+    var outDir = URL(fileURLWithPath: "library")
+    var formats: [AudioFormat] = [.flac]
+    var tocString: String?
+    var pick: Int?
+
+    var i = 0
+    while i < rest.count {
+        switch rest[i] {
+        case "--out":
+            i += 1
+            guard i < rest.count else { fail("--out needs a value") }
+            outDir = URL(fileURLWithPath: rest[i])
+        case "--format":
+            i += 1
+            guard i < rest.count else { fail("--format needs flac|alac|both") }
+            switch rest[i] {
+            case "flac": formats = [.flac]
+            case "alac": formats = [.alac]
+            case "both": formats = [.flac, .alac]
+            default: fail("--format must be flac, alac, or both")
+            }
+        case "--toc":
+            i += 1
+            guard i < rest.count else { fail("--toc needs a TOC string") }
+            tocString = rest[i]
+        case "--pick":
+            i += 1
+            guard i < rest.count, let n = Int(rest[i]) else { fail("--pick needs a number") }
+            pick = n
+        default:
+            if wavDir == nil, !rest[i].hasPrefix("--") {
+                wavDir = rest[i]
+            } else {
+                fail("Unknown option: \(rest[i])")
+            }
+        }
+        i += 1
+    }
+
+    guard let wavDir else { fail("encode needs a directory of trackNN.wav files") }
+    let wavURLs = (try? FileManager.default.contentsOfDirectory(
+        at: URL(fileURLWithPath: wavDir), includingPropertiesForKeys: nil
+    ))?.filter { $0.pathExtension == "wav" && $0.lastPathComponent.hasPrefix("track") }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+    guard !wavURLs.isEmpty else { fail("No trackNN.wav files in \(wavDir)") }
+
+    var album: ResolvedAlbum
+    var art: CoverArt?
+    if let tocString {
+        let numbers = tocString.split(separator: " ").compactMap { Int($0) }
+        guard numbers.count >= 4 else { fail("TOC string needs: first last leadout offsets…") }
+        let discTOC = DiscTOC(
+            firstTrack: numbers[0],
+            lastTrack: numbers[1],
+            leadOutOffset: numbers[2],
+            trackOffsets: Array(numbers.dropFirst(3))
+        )
+        let client = MusicBrainzClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+        let result = try await client.lookup(disc: discTOC)
+        let releases: [MBRelease]
+        switch result {
+        case .matched(let r), .fuzzy(let r): releases = r
+        case .none: releases = []
+        }
+        let ranked = ReleaseScorer().rank(
+            releases, discID: discTOC.musicBrainzDiscID, audioTrackCount: wavURLs.count
+        )
+        let chosen: MBRelease?
+        if let pick {
+            guard pick >= 1, pick <= ranked.count else { fail("--pick out of range") }
+            chosen = ranked[pick - 1].release
+        } else {
+            chosen = ranked.first?.release
+        }
+        if let chosen, let resolved = ResolvedAlbum(
+            release: chosen, discID: discTOC.musicBrainzDiscID, audioTrackCount: wavURLs.count
+        ) {
+            album = resolved
+            print("Tagging as: \(album.albumArtist) — \(album.album)")
+            let artClient = CoverArtClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+            art = await artClient.fetchArt(
+                releaseMBID: album.releaseMBID,
+                releaseGroupMBID: album.releaseGroupMBID,
+                fallbackQuery: "\(album.albumArtist) \(album.album)"
+            )
+            if let art { print("Cover art: \(art.source.rawValue), \(art.data.count / 1024) KB") }
+        } else {
+            print("No MusicBrainz match; tagging as Unknown Album.")
+            album = ResolvedAlbum.fallback(cdText: nil, discID: discTOC.musicBrainzDiscID, trackCount: wavURLs.count)
+        }
+    } else {
+        album = ResolvedAlbum.fallback(cdText: nil, discID: nil, trackCount: wavURLs.count)
+    }
+
+    guard album.tracks.count == wavURLs.count else {
+        fail("Release has \(album.tracks.count) tracks but \(wavURLs.count) WAVs found.")
+    }
+
+    let template = NamingTemplate.standard
+    var albumFolder: URL?
+    for (wav, track) in zip(wavURLs, album.tracks) {
+        let tags = TrackTags(album: album, track: track)
+        for format in formats {
+            let relative = template.render(album: album, track: track) + "." + format.fileExtension
+            let destination = outDir.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            albumFolder = destination.deletingLastPathComponent()
+            let encoder: any TrackEncoder = format == .flac ? FLACEncoder() : ALACEncoder()
+            try await encoder.encode(wav: wav, to: destination, tags: tags, art: art)
+            print("  \(relative)")
+        }
+    }
+    if let art, let albumFolder {
+        try art.data.write(to: albumFolder.appendingPathComponent("cover.\(art.fileExtension)"))
+        print("  cover.\(art.fileExtension)")
+    }
 
 default:
     print(usage)
