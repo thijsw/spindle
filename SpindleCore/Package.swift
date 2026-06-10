@@ -60,7 +60,7 @@ let package = Package(
 
         .executableTarget(
             name: "spindle-cli",
-            dependencies: ["DiscDrive", "Metadata", "RipEngine", "Encoding", "Naming", "Verification", "Transfer"]
+            dependencies: ["DiscDrive", "Metadata", "RipEngine", "Encoding", "Naming", "Verification", "Transfer", "SpindleCore"]
         ),
 
         .target(

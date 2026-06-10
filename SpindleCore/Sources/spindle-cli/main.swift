@@ -4,6 +4,7 @@ import Foundation
 import Metadata
 import Naming
 import RipEngine
+import SpindleCore
 import Transfer
 import Verification
 
@@ -864,6 +865,15 @@ case "push":
     }
     await destination.close()
     print(String(format: "Uploaded in %.1fs.", -pushStarted.timeIntervalSinceNow))
+
+case "prefs-check":
+    // Hidden diagnostic: proves the preferences file decodes (a malformed
+    // file silently falls back to defaults, losing drive calibration).
+    let prefs = PreferencesStore.load()
+    print("ripMode: \(prefs.ripMode.rawValue), formats: \(prefs.formats.map(\.rawValue))")
+    print("driveOffsets: \(prefs.driveOffsets)")
+    print("c2 denylist: \(prefs.drivesWithUnreliableC2 ?? [])")
+    print("destination: \(prefs.destination?.displayName ?? "none")")
 
 default:
     print(usage)
