@@ -9,7 +9,7 @@
 	<key>CFBundleIconFile</key>
 	<string>Spindle</string>
 	<key>CFBundleIdentifier</key>
-	<string>name.wijnmaalen.spindle</string>
+	<string>nl.huell.spindle</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

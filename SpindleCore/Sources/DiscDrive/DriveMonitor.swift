@@ -15,7 +15,7 @@ public enum DriveEvent: Sendable, Equatable {
 /// raw, and unmounts it if it was already mounted.
 public final class DriveMonitor: @unchecked Sendable {
     private let session: DASession
-    private let queue = DispatchQueue(label: "name.wijnmaalen.spindle.drivemonitor")
+    private let queue = DispatchQueue(label: "nl.huell.spindle.drivemonitor")
     private var heldDiscs: Set<String> = [] // guarded by queue
     private var continuation: AsyncStream<DriveEvent>.Continuation?
 

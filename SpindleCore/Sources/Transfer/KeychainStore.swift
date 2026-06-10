@@ -3,7 +3,7 @@ import Security
 
 /// Stores SFTP secrets (passwords, key passphrases) in the login keychain.
 public enum KeychainStore {
-    static let service = "name.wijnmaalen.spindle.sftp"
+    static let service = "nl.huell.spindle.sftp"
 
     public enum KeychainError: Error, CustomStringConvertible {
         case status(OSStatus)
