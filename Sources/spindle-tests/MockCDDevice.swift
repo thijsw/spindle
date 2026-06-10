@@ -18,11 +18,13 @@ actor MockCDDevice: CDDeviceIO {
     private var flaky: [Int: FlakySector]
     private(set) var readCount = 0
     private var garbageSeed = 0
+    private let tocData: Data
 
-    init(leadOut: Int, supportsC2: Bool = true, flaky: [Int: FlakySector] = [:]) {
+    init(leadOut: Int, supportsC2: Bool = true, flaky: [Int: FlakySector] = [:], tocData: Data = Data()) {
         self.leadOut = leadOut
         self.supportsC2 = supportsC2
         self.flaky = flaky
+        self.tocData = tocData
     }
 
     /// The canonical audio byte at an absolute disc byte position.
@@ -76,7 +78,7 @@ actor MockCDDevice: CDDeviceIO {
         return SectorBuffer(startLBA: range.lowerBound, sectorCount: range.count, areas: areas, data: data)
     }
 
-    func readFullTOC() throws -> Data { Data() }
+    func readFullTOC() throws -> Data { tocData }
     func readCDTextPacks() throws -> Data? { nil }
     func readISRC(track: Int) throws -> String? { nil }
     func readMCN() throws -> String? { nil }

@@ -1,0 +1,102 @@
+import Encoding
+import Foundation
+import Metadata
+import Naming
+import RipEngine
+import Transfer
+
+/// All user-configurable behavior. Persisted as JSON in Application Support;
+/// secrets live in the Keychain.
+public struct Preferences: Sendable, Codable, Equatable {
+    public enum EjectTiming: String, Sendable, Codable, CaseIterable {
+        /// Eject as soon as audio is staged and checksummed (default —
+        /// the user can insert the next disc while processing continues).
+        case afterRip
+        /// Eject only when encoding and transfer have finished.
+        case afterEverything
+    }
+
+    public enum RipMode: String, Sendable, Codable, CaseIterable {
+        case secure
+        case fast
+    }
+
+    public var formats: [AudioFormat]
+    public var namingTemplate: NamingTemplate
+    public var destination: DestinationConfig?
+    public var ejectTiming: EjectTiming
+    public var ripMode: RipMode
+    public var maxRetries: Int
+    /// Read-offset correction in samples, keyed by "vendor product" string.
+    public var driveOffsets: [String: Int]
+    public var metadata: MetadataPreferences
+    public var autoPickRelease: Bool
+    public var coverArtSize: CoverArtSize
+    public var writeCoverJPEG: Bool
+    public var notificationsEnabled: Bool
+    public var showMenuBarExtra: Bool
+
+    public init(
+        formats: [AudioFormat] = [.flac],
+        namingTemplate: NamingTemplate = .standard,
+        destination: DestinationConfig? = nil,
+        ejectTiming: EjectTiming = .afterRip,
+        ripMode: RipMode = .secure,
+        maxRetries: Int = 16,
+        driveOffsets: [String: Int] = [:],
+        metadata: MetadataPreferences = MetadataPreferences(),
+        autoPickRelease: Bool = true,
+        coverArtSize: CoverArtSize = .large,
+        writeCoverJPEG: Bool = true,
+        notificationsEnabled: Bool = true,
+        showMenuBarExtra: Bool = false
+    ) {
+        self.formats = formats
+        self.namingTemplate = namingTemplate
+        self.destination = destination
+        self.ejectTiming = ejectTiming
+        self.ripMode = ripMode
+        self.maxRetries = maxRetries
+        self.driveOffsets = driveOffsets
+        self.metadata = metadata
+        self.autoPickRelease = autoPickRelease
+        self.coverArtSize = coverArtSize
+        self.writeCoverJPEG = writeCoverJPEG
+        self.notificationsEnabled = notificationsEnabled
+        self.showMenuBarExtra = showMenuBarExtra
+    }
+
+    public func ripConfiguration(forDrive identity: String?) -> RipConfiguration {
+        RipConfiguration(
+            mode: ripMode == .secure
+                ? .secure(maxRetries: maxRetries, agreeingPasses: 2)
+                : .burst,
+            sampleOffset: identity.flatMap { driveOffsets[$0] } ?? 0
+        )
+    }
+}
+
+public enum PreferencesStore {
+    public static var applicationSupportURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Spindle")
+    }
+
+    static var fileURL: URL {
+        applicationSupportURL.appendingPathComponent("preferences.json")
+    }
+
+    public static func load() -> Preferences {
+        guard let data = try? Data(contentsOf: fileURL),
+              let prefs = try? JSONDecoder().decode(Preferences.self, from: data)
+        else { return Preferences() }
+        return prefs
+    }
+
+    public static func save(_ preferences: Preferences) {
+        try? FileManager.default.createDirectory(at: applicationSupportURL, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try? (try? encoder.encode(preferences))?.write(to: fileURL)
+    }
+}
