@@ -24,6 +24,8 @@ public struct VerifiedRipper: Sendable {
         /// True when the drive's C2 reporting was caught lying — remember
         /// per drive and disable C2 for it in future rips.
         public var c2Unreliable: Bool
+        /// Tracks abandoned because they exceeded the per-track time budget.
+        public var failedTracks: [Int]
     }
 
     private let device: any CDDeviceIO
@@ -56,7 +58,8 @@ public struct VerifiedRipper: Sendable {
                 verification: nil,
                 reRippedTracks: [],
                 strategy: "Secure rip (no verification database available)",
-                c2Unreliable: secure.c2Distrusted
+                c2Unreliable: secure.c2Distrusted,
+                failedTracks: secure.failedTracks
             )
         }
 
@@ -77,12 +80,13 @@ public struct VerifiedRipper: Sendable {
                 verification: verification,
                 reRippedTracks: [],
                 strategy: "Fast rip" + (verification.map { " — \($0.summary)" } ?? ""),
-                c2Unreliable: firstPass.c2Distrusted
+                c2Unreliable: firstPass.c2Distrusted,
+                failedTracks: firstPass.failedTracks
             )
         }
 
         // Which tracks does the database vouch for?
-        let unverified: [Int]
+        var unverified: [Int]
         if let verification, !verification.entries.isEmpty {
             unverified = verification.trackVerdicts
                 .filter { if case .accuratelyRipped = $0.value { false } else { true } }
@@ -92,6 +96,9 @@ public struct VerifiedRipper: Sendable {
             // Unknown disc (or offline): nothing is vouched for.
             unverified = toc.audioTracks.map(\.number)
         }
+        // A track that already exceeded its time budget would just burn
+        // another budget in the secure pass — carry it as failed instead.
+        unverified.removeAll { firstPass.failedTracks.contains($0) }
 
         if unverified.isEmpty, let verification {
             return Outcome(
@@ -99,7 +106,8 @@ public struct VerifiedRipper: Sendable {
                 verification: verification,
                 reRippedTracks: [],
                 strategy: "Verified against CTDB in the fast pass — \(verification.summary)",
-                c2Unreliable: firstPass.c2Distrusted
+                c2Unreliable: firstPass.c2Distrusted,
+                failedTracks: firstPass.failedTracks
             )
         }
 
@@ -125,7 +133,8 @@ public struct VerifiedRipper: Sendable {
             verification: verification,
             reRippedTracks: unverified,
             strategy: strategy,
-            c2Unreliable: firstPass.c2Distrusted || secondPass.c2Distrusted
+            c2Unreliable: firstPass.c2Distrusted || secondPass.c2Distrusted,
+            failedTracks: (firstPass.failedTracks + secondPass.failedTracks).sorted()
         )
     }
 

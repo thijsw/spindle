@@ -21,6 +21,10 @@ actor MockCDDevice: CDDeviceIO {
     /// Simulates a lying C2 implementation: sectors at/after this LBA are
     /// always C2-flagged even though their audio is perfectly fine.
     private let c2LiesAfterSector: Int?
+    /// Reads touching these sectors block for `slowReadDelay` first —
+    /// simulates a drive's internal retry storm on damaged media.
+    private let slowSectors: Set<Int>
+    private let slowReadDelay: Duration
     private(set) var readCount = 0
     private var garbageSeed = 0
     private let tocData: Data
@@ -31,6 +35,8 @@ actor MockCDDevice: CDDeviceIO {
         flaky: [Int: FlakySector] = [:],
         errorSectors: Set<Int> = [],
         c2LiesAfterSector: Int? = nil,
+        slowSectors: Set<Int> = [],
+        slowReadDelay: Duration = .milliseconds(50),
         tocData: Data = Data()
     ) {
         self.leadOut = leadOut
@@ -38,6 +44,8 @@ actor MockCDDevice: CDDeviceIO {
         self.flaky = flaky
         self.errorSectors = errorSectors
         self.c2LiesAfterSector = c2LiesAfterSector
+        self.slowSectors = slowSectors
+        self.slowReadDelay = slowReadDelay
         self.tocData = tocData
     }
 
@@ -56,6 +64,11 @@ actor MockCDDevice: CDDeviceIO {
 
     func readSectors(_ range: Range<Int>, areas: SectorAreas) throws -> SectorBuffer {
         readCount += 1 // counts attempts: failing contacts are the expensive ones
+        if !slowSectors.isDisjoint(with: range) {
+            // Blocking on purpose: a real DKIOCCDREAD blocks the thread too.
+            Thread.sleep(forTimeInterval: Double(slowReadDelay.components.seconds)
+                + Double(slowReadDelay.components.attoseconds) / 1e18)
+        }
         if areas.contains(.errorFlags), !supportsC2 {
             throw DiscDriveError.ioctlFailed(name: "DKIOCCDREAD", code: 22) // EINVAL
         }

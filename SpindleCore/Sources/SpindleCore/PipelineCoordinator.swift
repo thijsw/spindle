@@ -318,6 +318,15 @@ public actor PipelineCoordinator {
             if outcome.c2Unreliable, let identity {
                 eventContinuation?.yield(.c2Unreliable(driveKey: identity.offsetKey))
             }
+            for number in outcome.failedTracks {
+                updateTrack(job, number: number, status: .failed("Unreadable — gave up after the time limit"))
+            }
+            if !outcome.failedTracks.isEmpty {
+                eventContinuation?.yield(.notify(
+                    title: "Some tracks could not be read",
+                    body: "\(job.snapshot.displayTitle): track(s) \(outcome.failedTracks.map(String.init).joined(separator: ", ")) were skipped."
+                ))
+            }
             for track in outcome.tracks {
                 updateTrack(job, number: track.trackNumber, status: .ripped)
             }

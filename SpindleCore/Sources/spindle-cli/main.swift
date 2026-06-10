@@ -31,6 +31,7 @@ commands:
     --offset <n>    sample offset correction (default: 0)
     --track <n>     rip a single track
     --no-c2         never trust the drive's C2 error pointers
+    --give-up <s>   abandon a track after s seconds (default 300, 0 = never)
 
   encode <wavdir> [options]
                     encode staged track WAVs (track01.wav…) to FLAC/ALAC
@@ -298,6 +299,7 @@ case "rip":
     var onlyTrack: Int?
     var disk: String?
     var allowC2 = true
+    var giveUpSeconds = 300
 
     var i = 0
     while i < rest.count {
@@ -310,6 +312,10 @@ case "rip":
             mode = .burst
         case "--no-c2":
             allowC2 = false
+        case "--give-up":
+            i += 1
+            guard i < rest.count, let s = Int(rest[i]) else { fail("--give-up needs seconds") }
+            giveUpSeconds = s
         case "--offset":
             i += 1
             guard i < rest.count, let n = Int(rest[i]) else { fail("--offset needs a number") }
@@ -359,7 +365,12 @@ case "rip":
         print("note: no --offset given; \(identity.displayName) drives typically need \(suggestion.samples). Ripping with 0.")
     }
 
-    let config = RipConfiguration(mode: mode, sampleOffset: offset, allowC2: allowC2)
+    let config = RipConfiguration(
+        mode: mode,
+        sampleOffset: offset,
+        allowC2: allowC2,
+        trackTimeLimit: giveUpSeconds > 0 ? .seconds(giveUpSeconds) : nil
+    )
     let started = Date()
     print("Ripping \(toc.audioTracks.count) tracks to \(outDir.path) (\(mode == .burst ? "burst" : "verify-first secure"))…")
 
@@ -394,6 +405,9 @@ case "rip":
         print(line)
     }
     print(String(format: "Ripped in %.1fs. %@", -started.timeIntervalSinceNow, outcome.strategy))
+    if !outcome.failedTracks.isEmpty {
+        print("✗ Gave up on track(s) \(outcome.failedTracks.map(String.init).joined(separator: ", ")) — not ripped within the time limit (--give-up to adjust).")
+    }
     if outcome.c2Unreliable {
         print("⚠︎ This drive's C2 error reporting lied mid-rip; the engine fell back to compare mode. Future rips should disable C2 for this drive.")
     }

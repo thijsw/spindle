@@ -265,6 +265,40 @@ private func wavData(_ url: URL) -> Data {
         )
     }
 
+    @Test func hopelessTrackIsAbandonedWithinItsTimeBudget() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Track 1's tail is a crawl: one read touching it blocks for 6 s
+        // (simulating the drive's internal retry storm), blowing the 4 s
+        // budget at the next checkpoint. Track 2 starts on clean ground and
+        // finishes orders of magnitude inside the budget even in parallel
+        // debug-build test runs.
+        // Tiny track 2 keeps its wall time orders of magnitude inside the
+        // budget even under parallel debug-build test load.
+        let smallTOC = makeTOC(trackSectors: [0 ..< 150, 150 ..< 175], leadOut: 175)
+        let device = MockCDDevice(
+            leadOut: 175,
+            slowSectors: Set(60 ..< 150),
+            slowReadDelay: .seconds(6)
+        )
+        var config = RipConfiguration(mode: .burst, chunkSectors: 25)
+        config.trackTimeLimit = .seconds(4)
+        let result = try await DiscRipper(device: device, config: config).ripDisc(toc: smallTOC, to: dir)
+
+        #expect(result.failedTracks == [1], "track 1 abandoned")
+        #expect(result.tracks.map(\.trackNumber) == [2], "track 2 still ripped")
+        #expect(
+            !FileManager.default.fileExists(atPath: dir.appendingPathComponent("track01.wav").path),
+            "partial WAV of the abandoned track removed"
+        )
+        #expect(
+            wavData(result.tracks[0].wavURL) == expectedAudio(trackSectors: 150 ..< 175, sampleOffset: 0, leadOut: 175),
+            "track 2 byte-exact"
+        )
+        #expect(!result.isCompleteDisc, "disc marked incomplete")
+    }
+
     @Test func cleanDiscRipsAreDeterministic() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

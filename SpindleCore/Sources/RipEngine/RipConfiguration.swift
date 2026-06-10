@@ -20,19 +20,25 @@ public struct RipConfiguration: Sendable, Equatable {
     /// Whether C2 error pointers may be used at all. Off for drives whose C2
     /// has been caught lying (the verdict is remembered per drive).
     public var allowC2: Bool
+    /// Wall-clock budget per track. A track that can't be ripped within it
+    /// is abandoned and reported failed — one destroyed track must not hold
+    /// the rest of the disc hostage. nil disables the limit.
+    public var trackTimeLimit: Duration?
 
     public init(
         mode: Mode = .secureDefault,
         sampleOffset: Int = 0,
         chunkSectors: Int = 150,
         speedKBps: UInt16? = 0xFFFF,
-        allowC2: Bool = true
+        allowC2: Bool = true,
+        trackTimeLimit: Duration? = .seconds(300)
     ) {
         self.mode = mode
         self.sampleOffset = sampleOffset
         self.chunkSectors = chunkSectors
         self.speedKBps = speedKBps
         self.allowC2 = allowC2
+        self.trackTimeLimit = trackTimeLimit
     }
 }
 
@@ -64,11 +70,13 @@ public struct RippedTrack: Sendable {
 public enum RipError: Error, CustomStringConvertible, Sendable {
     case noAudioTracks
     case cancelled
+    case trackTimeLimitExceeded
 
     public var description: String {
         switch self {
         case .noAudioTracks: "The disc has no audio tracks"
         case .cancelled: "Rip was cancelled"
+        case .trackTimeLimitExceeded: "Track could not be ripped within the time limit"
         }
     }
 }

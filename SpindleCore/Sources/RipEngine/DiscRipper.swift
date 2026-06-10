@@ -77,6 +77,8 @@ public struct DiscRipper: Sendable {
         /// True when the drive's C2 was caught lying during this rip;
         /// remember this per drive and set `allowC2 = false` next time.
         public let c2Distrusted: Bool
+        /// Tracks abandoned because they exceeded the per-track time budget.
+        public let failedTracks: [Int]
     }
 
     public func rip(
@@ -147,6 +149,7 @@ public struct DiscRipper: Sendable {
 
         var results: [RippedTrack] = []
         var c2Distrusted = false
+        var failedTracks: [Int] = []
         for track in selected {
             let wavURL = stagingDirectory.appendingPathComponent(
                 String(format: "track%02d.wav", track.number)
@@ -158,30 +161,41 @@ public struct DiscRipper: Sendable {
                 useC2: needsC2,
                 damage: damage
             )
-            let ripped = try await ripper.rip(
-                track: track,
-                toc: toc,
-                isFirstAudio: track.number == audioTracks.first?.number,
-                isLastAudio: track.number == audioTracks.last?.number,
-                ctdbLeadingSkip: track.number == audioTracks.first?.number ? ctdbPrefix : 0,
-                ctdbTrailingSkip: track.number == audioTracks.last?.number ? ctdbSuffix : 0,
-                to: wavURL,
-                onAudio: audioTap,
-                progress: progress
-            )
-            results.append(ripped)
-            if ripped.c2Distrusted {
-                // The drive's C2 lied: stop using it for the rest of the disc.
-                needsC2 = false
-                c2Distrusted = true
+            do {
+                let ripped = try await ripper.rip(
+                    track: track,
+                    toc: toc,
+                    isFirstAudio: track.number == audioTracks.first?.number,
+                    isLastAudio: track.number == audioTracks.last?.number,
+                    ctdbLeadingSkip: track.number == audioTracks.first?.number ? ctdbPrefix : 0,
+                    ctdbTrailingSkip: track.number == audioTracks.last?.number ? ctdbSuffix : 0,
+                    to: wavURL,
+                    onAudio: audioTap,
+                    progress: progress
+                )
+                results.append(ripped)
+                if ripped.c2Distrusted {
+                    // The drive's C2 lied: stop using it for the rest of the disc.
+                    needsC2 = false
+                    c2Distrusted = true
+                }
+            } catch RipError.trackTimeLimitExceeded {
+                if ProcessInfo.processInfo.environment["SPINDLE_DEBUG_BUDGET"] != nil {
+                    print("[budget] track \(track.number) exceeded; started rip loop at \(ContinuousClock.now)")
+                }
+                // Give up on this track, keep the disc moving: the next
+                // track usually starts on readable ground.
+                failedTracks.append(track.number)
+                try? FileManager.default.removeItem(at: wavURL)
             }
         }
         return DiscRipResult(
             tracks: results,
             ctdbDiscCRC32: discCRC.value,
-            isCompleteDisc: isCompleteDisc,
+            isCompleteDisc: isCompleteDisc && failedTracks.isEmpty,
             usedC2: needsC2,
-            c2Distrusted: c2Distrusted
+            c2Distrusted: c2Distrusted,
+            failedTracks: failedTracks
         )
     }
 }

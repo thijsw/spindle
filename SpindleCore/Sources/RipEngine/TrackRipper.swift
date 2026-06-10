@@ -67,6 +67,23 @@ public struct TrackRipper: Sendable {
         private(set) var slowed = false
         private var c2SectorsSeen = 0
         private var c2SectorsFlagged = 0
+        private let deadline: ContinuousClock.Instant?
+
+        init(deadline: ContinuousClock.Instant?) {
+            self.deadline = deadline
+        }
+
+        /// Throws when the track's wall-clock budget is exhausted. Checked
+        /// between device contacts; a single in-flight ioctl can't be
+        /// interrupted, so the budget is best-effort by one contact.
+        func checkDeadline() throws {
+            if let deadline, ContinuousClock.now > deadline {
+                if ProcessInfo.processInfo.environment["SPINDLE_DEBUG_BUDGET"] != nil {
+                    print("[budget] deadline \(deadline) exceeded at \(ContinuousClock.now)")
+                }
+                throw RipError.trackTimeLimitExceeded
+            }
+        }
 
         /// True the first time a struggle is reported (caller then slows the drive).
         func noteStruggle() -> Bool {
@@ -142,7 +159,12 @@ public struct TrackRipper: Sendable {
             progress: progress
         )
 
-        let health = RipHealth()
+        let health = RipHealth(
+            deadline: config.trackTimeLimit.map { ContinuousClock.now + $0 }
+        )
+        if ProcessInfo.processInfo.environment["SPINDLE_DEBUG_BUDGET"] != nil {
+            print("[budget] track \(track.number) rip starts at \(ContinuousClock.now), limit \(String(describing: config.trackTimeLimit))")
+        }
         var result: RippedTrack
         if case .secure(let maxRetries, let agreeingPasses) = config.mode {
             if useC2 {
@@ -199,6 +221,7 @@ public struct TrackRipper: Sendable {
         var outputSector = 0
         while outputSector < totalSectors {
             try Task.checkCancellation()
+            try await health.checkDeadline()
             let chunk = min(config.chunkSectors, totalSectors - outputSector)
             let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
                 ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
@@ -253,6 +276,7 @@ public struct TrackRipper: Sendable {
         var outputSector = 0
         while outputSector < totalSectors {
             try Task.checkCancellation()
+            try await health.checkDeadline()
             let chunk = min(config.chunkSectors, totalSectors - outputSector)
             let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
                 ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
@@ -287,6 +311,7 @@ public struct TrackRipper: Sendable {
         outputSector = 0
         while outputSector < totalSectors {
             try Task.checkCancellation()
+            try await health.checkDeadline()
             let chunk = min(config.chunkSectors, totalSectors - outputSector)
             let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
                 ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
@@ -356,7 +381,7 @@ public struct TrackRipper: Sendable {
     /// are remembered and never touched again (pass 2, settles).
     private func resilientRead(
         _ sectors: Range<Int>, areas: SectorAreas, health: RipHealth
-    ) async -> (data: Data, unrecoverable: [Int]) {
+    ) async throws -> (data: Data, unrecoverable: [Int]) {
         let knownBad = await damage.knownBadRuns(intersecting: sectors)
 
         // A charted run ending exactly at our start means the scratch
@@ -367,7 +392,7 @@ public struct TrackRipper: Sendable {
                 intersecting: (sectors.lowerBound - 1) ..< sectors.lowerBound
             )
             if touching.contains(where: { $0.upperBound == sectors.lowerBound }) {
-                return await mapDamage(
+                return try await mapDamage(
                     sectors, areas: areas, health: health, knownBad: knownBad, continuingRun: true
                 )
             }
@@ -394,7 +419,7 @@ public struct TrackRipper: Sendable {
             }
         }
 
-        return await mapDamage(sectors, areas: areas, health: health, knownBad: knownBad)
+        return try await mapDamage(sectors, areas: areas, health: health, knownBad: knownBad)
     }
 
     private func mapDamage(
@@ -403,7 +428,7 @@ public struct TrackRipper: Sendable {
         health: RipHealth,
         knownBad: [Range<Int>],
         continuingRun: Bool = false
-    ) async -> (data: Data, unrecoverable: [Int]) {
+    ) async throws -> (data: Data, unrecoverable: [Int]) {
         let stride = areas.bytesPerSector
         var out = Data(count: sectors.count * stride) // zero-filled canvas
         var bad: [Int] = []
@@ -421,6 +446,7 @@ public struct TrackRipper: Sendable {
         var startInBadMode = continuingRun
 
         while cursor < sectors.upperBound, !Task.isCancelled {
+            try await health.checkDeadline()
             // Confirmed damage: zero-fill without touching the device.
             if let run = knownBad.first(where: { $0.contains(cursor) }) {
                 let span = cursor ..< min(run.upperBound, sectors.upperBound)
@@ -433,9 +459,10 @@ public struct TrackRipper: Sendable {
 
             if startInBadMode {
                 startInBadMode = false
-                let crossed = await crossBadRun(
+                let crossed = try await crossBadRun(
                     from: cursor, in: sectors, areas: areas,
                     initialBlock: 64, blockCap: 256,
+                    health: health,
                     out: &out, bad: &bad
                 )
                 cursor = crossed
@@ -467,9 +494,10 @@ public struct TrackRipper: Sendable {
 
             // cursor is confirmed unreadable: cross the run with exponential
             // zero-blocks, one failing probe per block.
-            cursor = await crossBadRun(
+            cursor = try await crossBadRun(
                 from: cursor, in: sectors, areas: areas,
                 initialBlock: 1, blockCap: 32,
+                health: health,
                 out: &out, bad: &bad
             )
             goodStep = 1
@@ -488,13 +516,15 @@ public struct TrackRipper: Sendable {
         areas: SectorAreas,
         initialBlock: Int,
         blockCap: Int,
+        health: RipHealth,
         out: inout Data,
         bad: inout [Int]
-    ) async -> Int {
+    ) async throws -> Int {
         let stride = areas.bytesPerSector
         var cursor = from
         var zeroBlock = initialBlock
         while cursor < sectors.upperBound, !Task.isCancelled {
+            try await health.checkDeadline()
             let blockEnd = min(cursor + zeroBlock, sectors.upperBound)
             bad.append(contentsOf: cursor ..< blockEnd)
             let lastBlock = cursor ..< blockEnd
@@ -576,7 +606,7 @@ public struct TrackRipper: Sendable {
                     sectors: clamped, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
                 )
             } else {
-                let resilient = await resilientRead(clamped, areas: .user, health: health)
+                let resilient = try await resilientRead(clamped, areas: .user, health: health)
                 read = ChunkResult(
                     audio: resilient.data, rereads: 0, unrecoverableSectors: resilient.unrecoverable
                 )
@@ -599,7 +629,7 @@ public struct TrackRipper: Sendable {
         sectors: Range<Int>, maxRetries: Int, agreeingPasses: Int, health: RipHealth
     ) async throws -> ChunkResult {
         let areas: SectorAreas = [.user, .errorFlags]
-        let resilient = await resilientRead(sectors, areas: areas, health: health)
+        let resilient = try await resilientRead(sectors, areas: areas, health: health)
         let buffer = SectorBuffer(
             startLBA: sectors.lowerBound, sectorCount: sectors.count, areas: areas, data: resilient.data
         )
@@ -656,6 +686,7 @@ public struct TrackRipper: Sendable {
 
         while rereads < effectiveMax, ContinuousClock.now < deadline {
             try Task.checkCancellation()
+            try await health.checkDeadline()
             if previousWasCacheFast {
                 await flushCache(near: lba)
             }
@@ -709,6 +740,7 @@ public struct TrackRipper: Sendable {
 
         while rereads < effectiveMax, ContinuousClock.now < deadline {
             try Task.checkCancellation()
+            try await health.checkDeadline()
             if previousWasCacheFast {
                 await flushCache(near: max(firstSector, readableSectors.lowerBound))
             }
