@@ -18,6 +18,9 @@ actor MockCDDevice: CDDeviceIO {
     private var flaky: [Int: FlakySector]
     /// Sectors whose reads always fail with EIO (hard damage).
     private let errorSectors: Set<Int>
+    /// Simulates a lying C2 implementation: sectors at/after this LBA are
+    /// always C2-flagged even though their audio is perfectly fine.
+    private let c2LiesAfterSector: Int?
     private(set) var readCount = 0
     private var garbageSeed = 0
     private let tocData: Data
@@ -27,12 +30,14 @@ actor MockCDDevice: CDDeviceIO {
         supportsC2: Bool = true,
         flaky: [Int: FlakySector] = [:],
         errorSectors: Set<Int> = [],
+        c2LiesAfterSector: Int? = nil,
         tocData: Data = Data()
     ) {
         self.leadOut = leadOut
         self.supportsC2 = supportsC2
         self.flaky = flaky
         self.errorSectors = errorSectors
+        self.c2LiesAfterSector = c2LiesAfterSector
         self.tocData = tocData
     }
 
@@ -80,7 +85,8 @@ actor MockCDDevice: CDDeviceIO {
             if areas.contains(.user) { data.append(audio) }
             if areas.contains(.errorFlags) {
                 var flags = Data(count: SectorAreas.c2BytesPerSector)
-                if c2Flagged { flags[0] = 0x80 }
+                let lying = c2LiesAfterSector.map { lba >= $0 } ?? false
+                if c2Flagged || lying { flags[0] = 0x80 }
                 data.append(flags)
             }
             if areas.contains(.subChannelQ) {

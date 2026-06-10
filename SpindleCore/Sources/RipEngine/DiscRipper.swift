@@ -65,6 +65,9 @@ public struct DiscRipper: Sendable {
         public let ctdbDiscCRC32: UInt32
         public let isCompleteDisc: Bool
         public let usedC2: Bool
+        /// True when the drive's C2 was caught lying during this rip;
+        /// remember this per drive and set `allowC2 = false` next time.
+        public let c2Distrusted: Bool
     }
 
     public func rip(
@@ -92,11 +95,9 @@ public struct DiscRipper: Sendable {
             try? await device.setSpeed(speed) // best effort; drives may refuse
         }
 
-        let needsC2: Bool
-        if case .secure = config.mode {
+        var needsC2 = false
+        if case .secure = config.mode, config.allowC2 {
             needsC2 = await probeC2(firstAudioLBA: audioTracks[0].startLBA)
-        } else {
-            needsC2 = false
         }
 
         // The readable audio area ends at the lead-out of the session that
@@ -115,13 +116,6 @@ public struct DiscRipper: Sendable {
             tunedConfig.chunkSectors /= 2
         }
 
-        let ripper = TrackRipper(
-            device: device,
-            config: tunedConfig,
-            readableSectors: 0 ..< audioEnd,
-            useC2: needsC2
-        )
-
         // CTDB skip windows: 2940 samples (5 sectors) into the first track,
         // and 2940 + (disc-length remainder mod 2940) before the lead-out.
         let totalSamples = audioEnd * 588
@@ -139,9 +133,16 @@ public struct DiscRipper: Sendable {
         let audioTap: (@Sendable (Data) -> Void)? = isCompleteDisc ? tap : nil
 
         var results: [RippedTrack] = []
+        var c2Distrusted = false
         for track in selected {
             let wavURL = stagingDirectory.appendingPathComponent(
                 String(format: "track%02d.wav", track.number)
+            )
+            let ripper = TrackRipper(
+                device: device,
+                config: tunedConfig,
+                readableSectors: 0 ..< audioEnd,
+                useC2: needsC2
             )
             let ripped = try await ripper.rip(
                 track: track,
@@ -155,12 +156,18 @@ public struct DiscRipper: Sendable {
                 progress: progress
             )
             results.append(ripped)
+            if ripped.c2Distrusted {
+                // The drive's C2 lied: stop using it for the rest of the disc.
+                needsC2 = false
+                c2Distrusted = true
+            }
         }
         return DiscRipResult(
             tracks: results,
             ctdbDiscCRC32: discCRC.value,
             isCompleteDisc: isCompleteDisc,
-            usedC2: needsC2
+            usedC2: needsC2,
+            c2Distrusted: c2Distrusted
         )
     }
 }

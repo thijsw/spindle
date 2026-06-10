@@ -315,6 +315,9 @@ public actor PipelineCoordinator {
             }
             job.rippedTracks = outcome.tracks
             job.snapshot.verificationSummary = outcome.verification?.summary ?? outcome.strategy
+            if outcome.c2Unreliable, let identity {
+                eventContinuation?.yield(.c2Unreliable(driveKey: identity.offsetKey))
+            }
             for track in outcome.tracks {
                 updateTrack(job, number: track.trackNumber, status: .ripped)
             }

@@ -154,4 +154,7 @@ public enum PipelineEvent: Sendable {
     case jobUpdated(JobSnapshot)
     case releaseChoiceNeeded(JobID)
     case notify(title: String, body: String)
+    /// The drive's C2 error reporting was caught lying; persist the verdict
+    /// so future rips skip C2 for this drive.
+    case c2Unreliable(driveKey: String)
 }

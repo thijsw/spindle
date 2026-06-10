@@ -102,6 +102,10 @@ final class AppModel {
 
         case .notify(let title, let body):
             postNotification(title: title, body: body)
+
+        case .c2Unreliable(let driveKey):
+            // Persisting via the preferences didSet also informs the coordinator.
+            preferences.markC2Unreliable(forDrive: driveKey)
         }
     }
 

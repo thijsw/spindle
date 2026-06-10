@@ -36,6 +36,9 @@ public struct TrackRipper: Sendable {
     /// A read slower than this means the drive is struggling internally;
     /// host-side retries add nothing beyond this point.
     private static let struggleThreshold: Duration = .seconds(2)
+    /// Hard wall-clock budget for settling one sector/window: retries are
+    /// pointless once the drive's own retry storms dominate each attempt.
+    private static let settleTimeBudget: Duration = .seconds(10)
     /// Speed requested while inside a damaged region (≈ 4×). Damaged media
     /// reads markedly better at low speed (the XLD/dbpoweramp playbook).
     private static let damagedRegionSpeed: UInt16 = 706
@@ -47,15 +50,31 @@ public struct TrackRipper: Sendable {
         self.useC2 = useC2
     }
 
+    /// Thrown when the drive's C2 flag rate is implausible — the track must
+    /// be restarted in compare mode and C2 retired for this drive.
+    struct C2DistrustError: Error {}
+
     /// Per-rip drive-state tracker (speed reduction happens once per track).
     private actor RipHealth {
         private(set) var slowed = false
+        private var c2SectorsSeen = 0
+        private var c2SectorsFlagged = 0
 
         /// True the first time a struggle is reported (caller then slows the drive).
         func noteStruggle() -> Bool {
             if slowed { return false }
             slowed = true
             return true
+        }
+
+        /// Tracks the C2 flag rate. A working drive flags a tiny fraction of
+        /// sectors even on a bad disc; whole-chunk flagging means the drive
+        /// is lying (one-shot probes can't catch intermittent liars).
+        /// Returns true when C2 should no longer be believed.
+        func noteC2(flagged: Int, of count: Int) -> Bool {
+            c2SectorsSeen += count
+            c2SectorsFlagged += flagged
+            return c2SectorsSeen >= 150 && c2SectorsFlagged * 20 > c2SectorsSeen
         }
     }
 
@@ -88,11 +107,24 @@ public struct TrackRipper: Sendable {
         )
 
         let health = RipHealth()
-        let result: RippedTrack
-        if case .secure(let maxRetries, let agreeingPasses) = config.mode, !useC2 {
-            result = try await twoPassCompareRip(
-                context, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
-            )
+        var result: RippedTrack
+        if case .secure(let maxRetries, let agreeingPasses) = config.mode {
+            if useC2 {
+                do {
+                    result = try await singlePassRip(context, health: health)
+                } catch is C2DistrustError {
+                    // The drive's C2 lied mid-track: restart this track in
+                    // compare mode with fresh state.
+                    result = try await twoPassCompareRip(
+                        context, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
+                    )
+                    result.c2Distrusted = true
+                }
+            } else {
+                result = try await twoPassCompareRip(
+                    context, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
+                )
+            }
         } else {
             result = try await singlePassRip(context, health: health)
         }
@@ -135,7 +167,7 @@ public struct TrackRipper: Sendable {
             let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
                 ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
 
-            let result = try await readChunk(for: byteRange, health: health)
+            let result = try await readChunk(for: byteRange, health: health, withC2: useC2)
             rereads += result.rereads
             unrecoverable.append(contentsOf: result.unrecoverableSectors)
 
@@ -188,7 +220,7 @@ public struct TrackRipper: Sendable {
             let chunk = min(config.chunkSectors, totalSectors - outputSector)
             let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
                 ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
-            let result = try await readChunk(for: byteRange, health: health)
+            let result = try await readChunk(for: byteRange, health: health, withC2: false)
             unrecoverable.append(contentsOf: result.unrecoverableSectors)
             try writer.append(result.audio)
             for s in 0 ..< chunk {
@@ -222,7 +254,7 @@ public struct TrackRipper: Sendable {
             let chunk = min(config.chunkSectors, totalSectors - outputSector)
             let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
                 ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
-            let result = try await readChunk(for: byteRange, health: health)
+            let result = try await readChunk(for: byteRange, health: health, withC2: false)
 
             for s in 0 ..< chunk {
                 let secondBytes = result.audio.subdata(
@@ -322,7 +354,7 @@ public struct TrackRipper: Sendable {
     /// Returns the bytes of the virtual disc byte stream for `byteRange`,
     /// zero-filled where the range falls outside the readable sector bounds.
     /// In C2 mode, flagged sectors are settled inline.
-    private func readChunk(for byteRange: Range<Int>, health: RipHealth) async throws -> ChunkResult {
+    private func readChunk(for byteRange: Range<Int>, health: RipHealth, withC2: Bool) async throws -> ChunkResult {
         let bps = Self.bytesPerSector
         let firstSector = byteRange.lowerBound.flooredDivision(by: bps)
         let lastSector = (byteRange.upperBound + bps - 1).flooredDivision(by: bps)
@@ -335,7 +367,7 @@ public struct TrackRipper: Sendable {
 
         if !clamped.isEmpty {
             let read: ChunkResult
-            if case .secure(let maxRetries, let agreeingPasses) = config.mode, useC2 {
+            if case .secure(let maxRetries, let agreeingPasses) = config.mode, withC2 {
                 read = try await readWithC2(
                     sectors: clamped, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
                 )
@@ -367,6 +399,15 @@ public struct TrackRipper: Sendable {
         let buffer = SectorBuffer(
             startLBA: sectors.lowerBound, sectorCount: sectors.count, areas: areas, data: resilient.data
         )
+
+        // Sanity-check the flag rate before acting on a single flag: an
+        // implausible rate means the drive's C2 is lying, and settling
+        // lie-flagged sectors would grind the mechanism for nothing.
+        let flagged = (0 ..< sectors.count).count { buffer.hasC2Error(sector: $0) }
+        if await health.noteC2(flagged: flagged, of: sectors.count) {
+            throw C2DistrustError()
+        }
+
         var audio = Data(capacity: sectors.count * Self.bytesPerSector)
         var rereads = 0
         var unrecoverable = resilient.unrecoverable
@@ -407,8 +448,9 @@ public struct TrackRipper: Sendable {
         var rereads = 0
         var effectiveMax = maxRetries
         var previousWasCacheFast = true // the triggering read just cached this sector
+        let deadline = ContinuousClock.now + Self.settleTimeBudget
 
-        while rereads < effectiveMax {
+        while rereads < effectiveMax, ContinuousClock.now < deadline {
             try Task.checkCancellation()
             if previousWasCacheFast {
                 await flushCache(near: lba)
@@ -454,13 +496,14 @@ public struct TrackRipper: Sendable {
         var rereads = 0
         var effectiveMax = maxRetries
         var previousWasCacheFast = true
+        let deadline = ContinuousClock.now + Self.settleTimeBudget
 
         let bps = Self.bytesPerSector
         let firstSector = byteRange.lowerBound.flooredDivision(by: bps)
         let lastSector = (byteRange.upperBound + bps - 1).flooredDivision(by: bps)
         let clamped = (firstSector ..< lastSector).clamped(to: readableSectors)
 
-        while rereads < effectiveMax {
+        while rereads < effectiveMax, ContinuousClock.now < deadline {
             try Task.checkCancellation()
             if previousWasCacheFast {
                 await flushCache(near: max(firstSector, readableSectors.lowerBound))

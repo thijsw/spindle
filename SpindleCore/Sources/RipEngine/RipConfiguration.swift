@@ -17,17 +17,22 @@ public struct RipConfiguration: Sendable, Equatable {
     public var chunkSectors: Int
     /// Requested drive speed in KB/s (0xFFFF = max); nil leaves the drive alone.
     public var speedKBps: UInt16?
+    /// Whether C2 error pointers may be used at all. Off for drives whose C2
+    /// has been caught lying (the verdict is remembered per drive).
+    public var allowC2: Bool
 
     public init(
         mode: Mode = .secureDefault,
         sampleOffset: Int = 0,
         chunkSectors: Int = 150,
-        speedKBps: UInt16? = 0xFFFF
+        speedKBps: UInt16? = 0xFFFF,
+        allowC2: Bool = true
     ) {
         self.mode = mode
         self.sampleOffset = sampleOffset
         self.chunkSectors = chunkSectors
         self.speedKBps = speedKBps
+        self.allowC2 = allowC2
     }
 }
 
@@ -51,6 +56,9 @@ public struct RippedTrack: Sendable {
     /// Absolute LBAs that never produced agreeing reads (kept best-effort).
     public let unrecoverableSectors: [Int]
     public let usedC2: Bool
+    /// True when the drive's C2 reporting was caught lying mid-track and the
+    /// track was restarted in compare mode. C2 should stay off for this drive.
+    public var c2Distrusted: Bool = false
 }
 
 public enum RipError: Error, CustomStringConvertible, Sendable {

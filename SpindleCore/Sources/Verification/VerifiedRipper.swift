@@ -21,6 +21,9 @@ public struct VerifiedRipper: Sendable {
         public var reRippedTracks: [Int]
         /// Human-readable description of which strategy resolved the rip.
         public var strategy: String
+        /// True when the drive's C2 reporting was caught lying — remember
+        /// per drive and disable C2 for it in future rips.
+        public var c2Unreliable: Bool
     }
 
     private let device: any CDDeviceIO
@@ -49,7 +52,8 @@ public struct VerifiedRipper: Sendable {
                 tracks: secure.tracks,
                 verification: nil,
                 reRippedTracks: [],
-                strategy: "Secure rip (no verification database available)"
+                strategy: "Secure rip (no verification database available)",
+                c2Unreliable: secure.c2Distrusted
             )
         }
 
@@ -69,7 +73,8 @@ public struct VerifiedRipper: Sendable {
                 tracks: firstPass.tracks,
                 verification: verification,
                 reRippedTracks: [],
-                strategy: "Fast rip" + (verification.map { " — \($0.summary)" } ?? "")
+                strategy: "Fast rip" + (verification.map { " — \($0.summary)" } ?? ""),
+                c2Unreliable: firstPass.c2Distrusted
             )
         }
 
@@ -90,7 +95,8 @@ public struct VerifiedRipper: Sendable {
                 tracks: firstPass.tracks,
                 verification: verification,
                 reRippedTracks: [],
-                strategy: "Verified against CTDB in the fast pass — \(verification.summary)"
+                strategy: "Verified against CTDB in the fast pass — \(verification.summary)",
+                c2Unreliable: firstPass.c2Distrusted
             )
         }
 
@@ -115,7 +121,8 @@ public struct VerifiedRipper: Sendable {
             tracks: merged,
             verification: verification,
             reRippedTracks: unverified,
-            strategy: strategy
+            strategy: strategy,
+            c2Unreliable: firstPass.c2Distrusted || secondPass.c2Distrusted
         )
     }
 

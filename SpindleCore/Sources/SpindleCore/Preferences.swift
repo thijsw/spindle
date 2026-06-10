@@ -29,6 +29,9 @@ public struct Preferences: Sendable, Codable, Equatable {
     public var maxRetries: Int
     /// Read-offset correction in samples, keyed by "vendor product" string.
     public var driveOffsets: [String: Int]
+    /// Drives whose C2 error reporting was caught lying (same keys as
+    /// `driveOffsets`). Optional so older preference files still decode.
+    public var drivesWithUnreliableC2: [String]?
     public var metadata: MetadataPreferences
     public var autoPickRelease: Bool
     public var coverArtSize: CoverArtSize
@@ -71,8 +74,16 @@ public struct Preferences: Sendable, Codable, Equatable {
             mode: ripMode == .secure
                 ? .secure(maxRetries: maxRetries, agreeingPasses: 2)
                 : .burst,
-            sampleOffset: identity.flatMap { driveOffsets[$0] } ?? 0
+            sampleOffset: identity.flatMap { driveOffsets[$0] } ?? 0,
+            allowC2: identity.map { !(drivesWithUnreliableC2 ?? []).contains($0) } ?? true
         )
+    }
+
+    public mutating func markC2Unreliable(forDrive identity: String) {
+        var list = drivesWithUnreliableC2 ?? []
+        guard !list.contains(identity) else { return }
+        list.append(identity)
+        drivesWithUnreliableC2 = list
     }
 }
 

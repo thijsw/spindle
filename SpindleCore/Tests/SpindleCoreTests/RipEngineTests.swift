@@ -181,6 +181,57 @@ private func wavData(_ url: URL) -> Data {
         )
     }
 
+    @Test func lyingC2IsDetectedAndRetiredMidRip() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // The drive's C2 looks healthy at the probe (sectors 0..32) but
+        // flags every sector from 100 on, despite perfect audio — the Apple
+        // SuperDrive failure mode. The engine must catch the implausible
+        // flag rate, restart the track in compare mode, and stop using C2
+        // for the rest of the disc.
+        let device = MockCDDevice(leadOut: leadOut, c2LiesAfterSector: 100)
+        let config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2), chunkSectors: 150)
+        let result = try await DiscRipper(device: device, config: config)
+            .ripDisc(toc: toc, to: dir)
+
+        #expect(result.c2Distrusted, "the lie was caught")
+        #expect(!result.usedC2, "C2 retired for the rest of the disc")
+        #expect(result.tracks[0].c2Distrusted, "track 1 was restarted in compare mode")
+        #expect(!result.tracks[1].usedC2, "track 2 never used C2")
+        #expect(
+            result.tracks.allSatisfy { $0.unrecoverableSectors.isEmpty },
+            "no false damage reports from lie-flagged sectors"
+        )
+        #expect(
+            wavData(result.tracks[0].wavURL) == expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 0, leadOut: leadOut),
+            "track 1 audio exact despite the lying C2"
+        )
+        #expect(
+            wavData(result.tracks[1].wavURL) == expectedAudio(trackSectors: 150 ..< 400, sampleOffset: 0, leadOut: leadOut),
+            "track 2 audio exact"
+        )
+    }
+
+    @Test func disallowedC2IsNeverProbed() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // With allowC2 off, even a flag storm from sector 0 is irrelevant —
+        // the C2 path must never engage.
+        let device = MockCDDevice(leadOut: leadOut, c2LiesAfterSector: 0)
+        var config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2))
+        config.allowC2 = false
+        let result = try await DiscRipper(device: device, config: config)
+            .ripDisc(toc: toc, to: dir)
+
+        #expect(!result.usedC2)
+        #expect(!result.c2Distrusted, "nothing to distrust — C2 was never consulted")
+        #expect(
+            wavData(result.tracks[0].wavURL) == expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 0, leadOut: leadOut)
+        )
+    }
+
     @Test func cleanDiscRipsAreDeterministic() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -30,6 +30,7 @@ commands:
     --fast          burst mode (default: secure)
     --offset <n>    sample offset correction (default: 0)
     --track <n>     rip a single track
+    --no-c2         never trust the drive's C2 error pointers
 
   encode <wavdir> [options]
                     encode staged track WAVs (track01.wav…) to FLAC/ALAC
@@ -296,6 +297,7 @@ case "rip":
     var offset = 0
     var onlyTrack: Int?
     var disk: String?
+    var allowC2 = true
 
     var i = 0
     while i < rest.count {
@@ -306,6 +308,8 @@ case "rip":
             outDir = URL(fileURLWithPath: rest[i])
         case "--fast":
             mode = .burst
+        case "--no-c2":
+            allowC2 = false
         case "--offset":
             i += 1
             guard i < rest.count, let n = Int(rest[i]) else { fail("--offset needs a number") }
@@ -355,7 +359,7 @@ case "rip":
         print("note: no --offset given; \(identity.displayName) drives typically need \(suggestion.samples). Ripping with 0.")
     }
 
-    let config = RipConfiguration(mode: mode, sampleOffset: offset)
+    let config = RipConfiguration(mode: mode, sampleOffset: offset, allowC2: allowC2)
     let started = Date()
     print("Ripping \(toc.audioTracks.count) tracks to \(outDir.path) (\(mode == .burst ? "burst" : "verify-first secure"))…")
 
@@ -390,6 +394,9 @@ case "rip":
         print(line)
     }
     print(String(format: "Ripped in %.1fs. %@", -started.timeIntervalSinceNow, outcome.strategy))
+    if outcome.c2Unreliable {
+        print("⚠︎ This drive's C2 error reporting lied mid-rip; the engine fell back to compare mode. Future rips should disable C2 for this drive.")
+    }
 
     if let verification = outcome.verification {
         if let match = verification.discMatch {
