@@ -83,12 +83,13 @@ struct IdleView: View {
 }
 
 struct ActiveJobView: View {
+    @Environment(AppModel.self) private var model
     let job: JobSnapshot
 
     var body: some View {
         HStack(alignment: .top, spacing: 20) {
             VStack(alignment: .leading, spacing: 12) {
-                CoverArtView(data: job.artData)
+                CoverArtView(image: model.coverArt(for: job.id))
                     .frame(width: 220, height: 220)
 
                 Text(job.album?.album ?? "Audio CD")
@@ -121,11 +122,12 @@ struct ActiveJobView: View {
 }
 
 struct CoverArtView: View {
-    let data: Data?
+    /// Pre-decoded by AppModel; never decoded in this body.
+    let image: NSImage?
 
     var body: some View {
         Group {
-            if let data, let image = NSImage(data: data) {
+            if let image {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -141,7 +143,7 @@ struct CoverArtView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .shadow(radius: 4, y: 2)
-        .animation(.easeInOut(duration: 0.4), value: data)
+        .animation(.easeInOut(duration: 0.4), value: image)
     }
 }
 

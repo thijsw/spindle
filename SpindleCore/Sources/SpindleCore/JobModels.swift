@@ -112,7 +112,11 @@ public struct JobSnapshot: Sendable, Equatable, Identifiable {
     public var stage: JobStage
     public var discID: String?
     public var album: ResolvedAlbum?
-    public var artData: Data?
+    /// Whether cover art has arrived. The image bytes are delivered out of
+    /// band via `PipelineEvent.artLoaded` so this frequently-updated,
+    /// Equatable snapshot stays small — carrying 500 KB here and diffing it
+    /// 10×/s beach-balls the UI.
+    public var hasArt: Bool
     public var tracks: [TrackState]
     public var candidates: [ReleaseCandidate]
     public var verificationSummary: String?
@@ -157,4 +161,6 @@ public enum PipelineEvent: Sendable {
     /// The drive's C2 error reporting was caught lying; persist the verdict
     /// so future rips skip C2 for this drive.
     case c2Unreliable(driveKey: String)
+    /// Cover art bytes for a job, delivered once (kept out of the snapshot).
+    case artLoaded(JobID, Data)
 }

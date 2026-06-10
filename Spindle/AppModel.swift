@@ -8,6 +8,10 @@ import UserNotifications
 @Observable
 final class AppModel {
     private(set) var jobs: [JobSnapshot] = []
+    /// Cover art decoded exactly once per job (never in a SwiftUI body).
+    private(set) var coverArt: [JobID: NSImage] = [:]
+
+    func coverArt(for id: JobID) -> NSImage? { coverArt[id] }
     private(set) var history: [JobRecord] = []
     private(set) var startupError: String?
 
@@ -102,6 +106,15 @@ final class AppModel {
 
         case .notify(let title, let body):
             postNotification(title: title, body: body)
+
+        case .artLoaded(let jobID, let data):
+            // Decode the JPEG once, off the main thread, then cache the image.
+            Task {
+                let image = await Task.detached(priority: .userInitiated) {
+                    NSImage(data: data)
+                }.value
+                if let image { coverArt[jobID] = image }
+            }
 
         case .c2Unreliable(let driveKey):
             // Persisting via the preferences didSet also informs the coordinator.

@@ -92,7 +92,7 @@ public actor PipelineCoordinator {
                 stage: .detected,
                 discID: nil,
                 album: nil,
-                artData: nil,
+                hasArt: false,
                 tracks: [],
                 candidates: [],
                 verificationSummary: nil,
@@ -425,8 +425,10 @@ public actor PipelineCoordinator {
             )
             if let job = jobs[jobID], let art {
                 job.art = art
-                job.snapshot.artData = art.data
+                job.snapshot.hasArt = true
                 publish(job)
+                // Bytes out of band: the snapshot stays small and cheap.
+                eventContinuation?.yield(.artLoaded(job.id, art.data))
             }
         }
     }
