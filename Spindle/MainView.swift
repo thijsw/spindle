@@ -67,8 +67,8 @@ struct IdleView: View {
                 .font(.title2)
                 .foregroundStyle(.secondary)
             Group {
-                if let destination = model.preferences.destination {
-                    Text("Ripping to \(destination.displayName)")
+                if let destination = model.destinationSummary {
+                    Text("Ripping to \(destination)")
                 } else {
                     Text("No destination configured yet — open Settings to pick one.")
                         .foregroundStyle(.orange)

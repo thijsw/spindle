@@ -28,7 +28,7 @@ struct SettingsView: View {
 // MARK: - General
 
 struct GeneralSettingsPane: View {
-    @Environment(AppModel.self) private var model
+    @Environment(SettingsStore.self) private var model
 
     var body: some View {
         @Bindable var model = model
@@ -93,7 +93,7 @@ struct GeneralSettingsPane: View {
 // MARK: - Destination
 
 struct DestinationSettingsPane: View {
-    @Environment(AppModel.self) private var model
+    @Environment(SettingsStore.self) private var model
 
     private enum Kind: String, CaseIterable {
         case none = "None"
@@ -317,7 +317,7 @@ struct DestinationSettingsPane: View {
 // MARK: - Ripping
 
 struct RippingSettingsPane: View {
-    @Environment(AppModel.self) private var model
+    @Environment(SettingsStore.self) private var model
     @State private var driveName: String?
     @State private var driveKey: String?
     @State private var suggestedOffset: Int?
@@ -394,7 +394,7 @@ struct RippingSettingsPane: View {
 // MARK: - Metadata
 
 struct MetadataSettingsPane: View {
-    @Environment(AppModel.self) private var model
+    @Environment(SettingsStore.self) private var model
 
     var body: some View {
         @Bindable var model = model

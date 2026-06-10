@@ -17,7 +17,7 @@ struct SpindleApp: App {
 
         Settings {
             SettingsView()
-                .environment(model)
+                .environment(model.settings)
         }
 
         MenuBarExtra(isInserted: menuBarBinding, content: {
@@ -30,8 +30,8 @@ struct SpindleApp: App {
 
     private var menuBarBinding: Binding<Bool> {
         Binding(
-            get: { model.preferences.showMenuBarExtra },
-            set: { model.preferences.showMenuBarExtra = $0 }
+            get: { model.settings.preferences.showMenuBarExtra },
+            set: { model.settings.preferences.showMenuBarExtra = $0 }
         )
     }
 }

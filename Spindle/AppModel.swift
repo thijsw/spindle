@@ -35,15 +35,13 @@ final class AppModel {
     private(set) var history: [JobRecord] = []
     private(set) var startupError: String?
 
-    var preferences: Preferences {
-        didSet {
-            guard preferences != oldValue else { return }
-            PreferencesStore.save(preferences)
-            let coordinator = self.coordinator
-            let preferences = self.preferences
-            Task { await coordinator?.updatePreferences(preferences) }
-        }
-    }
+    /// Preferences live in their own observable so the Settings window never
+    /// re-renders on rip churn. Convenience accessor for AppModel-internal use.
+    let settings: SettingsStore
+    private var preferences: Preferences { settings.preferences }
+
+    /// Destination label for the idle screen.
+    var destinationSummary: String? { settings.preferences.destination?.displayName }
 
     /// Job whose release picker should be shown (nil hides the sheet).
     var pickerJobID: JobID?
@@ -53,7 +51,11 @@ final class AppModel {
     private let powerAssertion = PowerAssertion()
 
     init() {
-        self.preferences = PreferencesStore.load()
+        self.settings = SettingsStore(PreferencesStore.load())
+        self.settings.onChange = { [weak self] prefs in
+            guard let coordinator = self?.coordinator else { return }
+            Task { await coordinator.updatePreferences(prefs) }
+        }
     }
 
     var hasActiveJobs: Bool {
@@ -143,8 +145,8 @@ final class AppModel {
             }
 
         case .c2Unreliable(let driveKey):
-            // Persisting via the preferences didSet also informs the coordinator.
-            preferences.markC2Unreliable(forDrive: driveKey)
+            // SettingsStore.didSet persists and informs the coordinator.
+            settings.preferences.markC2Unreliable(forDrive: driveKey)
         }
     }
 
