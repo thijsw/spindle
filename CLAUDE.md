@@ -68,6 +68,15 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
   library.
 - Never diagnose drive stalls by theorizing: `sample <pid> 5` while hung
   shows exactly which engine path is blocked in ioctl.
+- Damaged media economics: a FAILING read costs the drive's internal retry
+  storm (1–2 min on the SuperDrive) and cannot be interrupted from
+  userspace. The engine therefore budgets failing contacts (damage-run
+  mapping + continuation in TrackRipper, shared DamageMap across passes)
+  and enforces a per-track wall-clock budget (RipConfiguration
+  .trackTimeLimit, default 5 min; CLI --give-up) — an unreadable track is
+  abandoned (failedTracks) so the disc keeps moving. Tested against a
+  scratched Adele "21" disc whose track 1 needed ~20 min even with run
+  mapping.
 
 - `AVAudioFile.read(into:)` throws a spurious `nilError` at exact EOF — every
   read loop must guard `framePosition < length`. Already handled in Encoding;
