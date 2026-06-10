@@ -31,7 +31,13 @@ struct SpindleApp: App {
     private var menuBarBinding: Binding<Bool> {
         Binding(
             get: { model.settings.preferences.showMenuBarExtra },
-            set: { model.settings.preferences.showMenuBarExtra = $0 }
+            set: { newValue in
+                // SwiftUI drives this setter continuously; assigning even an
+                // unchanged value notifies every preferences observer (and
+                // re-renders the Settings panes), so write only on a real change.
+                guard newValue != model.settings.preferences.showMenuBarExtra else { return }
+                model.settings.preferences.showMenuBarExtra = newValue
+            }
         )
     }
 }
