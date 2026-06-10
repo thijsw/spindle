@@ -1,9 +1,10 @@
 import Foundation
 import Metadata
+import Testing
 
 // A trimmed but structurally faithful WS/2 discid response (two releases,
 // the first carrying our DiscID on its medium).
-private let discIDResponseJSON = """
+let discIDResponseJSON = """
 {
   "id": "xUp1F2NkfP8s8jaeFn_Av3jNEI4-",
   "offset-count": 2,
@@ -66,37 +67,43 @@ private let discIDResponseJSON = """
 }
 """
 
-@MainActor
-func metadataTests() {
-    Harness.suite("MusicBrainz models") {
-        guard let response = try? JSONDecoder().decode(MBDiscIDResponse.self, from: Data(discIDResponseJSON.utf8)) else {
-            Harness.expect(false, "discid response decodes")
-            return
-        }
-        Harness.expect(response.releases?.count == 2, "two releases decoded")
+@Suite struct MusicBrainzModelTests {
+    func decodeFixture() throws -> MBDiscIDResponse {
+        try JSONDecoder().decode(MBDiscIDResponse.self, from: Data(discIDResponseJSON.utf8))
+    }
 
-        let release = response.releases![0]
-        Harness.expect(release.title == "Test Album", "release title")
-        Harness.expect((release.artistCredit ?? []).joinedName == "Some Artist feat. Guest", "artist credit join phrase")
-        Harness.expect(release.releaseGroup?.firstReleaseDate == "1997-09-22", "release group original date")
-        Harness.expect(release.media?.first?.discs?.first?.id == "xUp1F2NkfP8s8jaeFn_Av3jNEI4-", "disc id attached to medium")
+    @Test func decodesDiscIDResponse() throws {
+        let response = try decodeFixture()
+        #expect(response.releases?.count == 2)
 
-        guard let album = ResolvedAlbum(release: release, discID: "xUp1F2NkfP8s8jaeFn_Av3jNEI4-", audioTrackCount: 2) else {
-            Harness.expect(false, "release resolves to album")
-            return
-        }
-        Harness.expect(album.albumArtist == "Some Artist feat. Guest", "resolved album artist")
-        Harness.expect(album.year == "1997", "year derived from date")
-        Harness.expect(album.originalDate == "1997-09-22", "original date from release group")
-        Harness.expect(album.label == "Test Records" && album.catalogNumber == "CAT-001", "label info")
-        Harness.expect(album.tracks.count == 2, "two resolved tracks")
-        Harness.expect(album.tracks[0].artist == "Some Artist feat. Guest", "track 1 inherits album credit")
-        Harness.expect(album.tracks[1].artist == "Guest", "track 2 uses recording credit")
-        Harness.expect(album.tracks[1].recordingMBID == "99999999-aaaa-bbbb-cccc-000000000009", "recording MBID carried")
+        let release = try #require(response.releases?.first)
+        #expect(release.title == "Test Album")
+        #expect((release.artistCredit ?? []).joinedName == "Some Artist feat. Guest")
+        #expect(release.releaseGroup?.firstReleaseDate == "1997-09-22")
+        #expect(release.media?.first?.discs?.first?.id == "xUp1F2NkfP8s8jaeFn_Av3jNEI4-")
+    }
 
+    @Test func resolvesAlbumFromRelease() throws {
+        let release = try #require(decodeFixture().releases?.first)
+        let album = try #require(ResolvedAlbum(
+            release: release, discID: "xUp1F2NkfP8s8jaeFn_Av3jNEI4-", audioTrackCount: 2
+        ))
+        #expect(album.albumArtist == "Some Artist feat. Guest")
+        #expect(album.year == "1997")
+        #expect(album.originalDate == "1997-09-22")
+        #expect(album.label == "Test Records")
+        #expect(album.catalogNumber == "CAT-001")
+        #expect(album.tracks.count == 2)
+        #expect(album.tracks[0].artist == "Some Artist feat. Guest", "track 1 inherits album credit")
+        #expect(album.tracks[1].artist == "Guest", "track 2 uses recording credit")
+        #expect(album.tracks[1].recordingMBID == "99999999-aaaa-bbbb-cccc-000000000009")
+    }
+
+    @Test func fallbackAlbumsUseDiscIDAndCDText() {
         let fallback = ResolvedAlbum.fallback(cdText: nil, discID: "xUp1F2NkfP8s8jaeFn_Av3jNEI4-", trackCount: 3)
-        Harness.expect(fallback.album == "Unknown Album (xUp1F2Nk)", "fallback album name uses DiscID prefix")
-        Harness.expect(fallback.tracks.count == 3 && fallback.tracks[2].title == "Track 03", "fallback track names")
+        #expect(fallback.album == "Unknown Album (xUp1F2Nk)")
+        #expect(fallback.tracks.count == 3)
+        #expect(fallback.tracks[2].title == "Track 03")
 
         let cdText = CDTextInfo(
             albumTitle: "Text Album",
@@ -105,25 +112,24 @@ func metadataTests() {
             trackPerformers: [:]
         )
         let fromText = ResolvedAlbum.fallback(cdText: cdText, discID: nil, trackCount: 2)
-        Harness.expect(fromText.album == "Text Album" && fromText.tracks[1].title == "Zwei", "CD-TEXT fallback used")
+        #expect(fromText.album == "Text Album")
+        #expect(fromText.tracks[1].title == "Zwei")
     }
+}
 
-    Harness.suite("Release scorer") {
-        guard let response = try? JSONDecoder().decode(MBDiscIDResponse.self, from: Data(discIDResponseJSON.utf8)),
-              let releases = response.releases
-        else {
-            Harness.expect(false, "fixture decodes")
-            return
-        }
-
+@Suite struct ReleaseScorerTests {
+    @Test func ranksOfficialMatchingReleaseFirst() throws {
+        let releases = try #require(
+            try JSONDecoder().decode(MBDiscIDResponse.self, from: Data(discIDResponseJSON.utf8)).releases
+        )
         let scorer = ReleaseScorer(preferences: MetadataPreferences(preferredCountries: ["NL"]))
         let ranked = scorer.rank(releases, discID: "xUp1F2NkfP8s8jaeFn_Av3jNEI4-", audioTrackCount: 2)
-        Harness.expect(ranked.count == 2, "all candidates ranked")
-        Harness.expect(ranked[0].release.id == "11111111-aaaa-bbbb-cccc-000000000001", "official CD with DiscID + matching count wins")
-        Harness.expect(ranked[0].confidence > 0.7, "clear winner gets high confidence")
-        Harness.expect(ranked[1].confidence == 0, "runner-up has no confidence")
+        #expect(ranked.count == 2)
+        #expect(ranked[0].release.id == "11111111-aaaa-bbbb-cccc-000000000001")
+        #expect(ranked[0].confidence > 0.7, "clear winner gets high confidence")
+        #expect(ranked[1].confidence == 0, "runner-up has no confidence")
 
         let single = scorer.rank([releases[0]], discID: nil, audioTrackCount: 2)
-        Harness.expect(single[0].confidence > 0.7, "sole candidate gets high confidence")
+        #expect(single[0].confidence > 0.7, "sole candidate gets high confidence")
     }
 }

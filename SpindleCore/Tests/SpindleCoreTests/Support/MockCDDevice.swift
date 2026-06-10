@@ -84,3 +84,35 @@ actor MockCDDevice: CDDeviceIO {
     func readMCN() throws -> String? { nil }
     func setSpeed(_ kbps: UInt16) throws {}
 }
+
+/// Builds a synthetic DKIOCCDREADTOC format-2 (full TOC, MSF) response.
+func makeFullTOC(descriptors: [[UInt8]], firstSession: UInt8 = 1, lastSession: UInt8 = 1) -> Data {
+    let dataLength = UInt16(2 + descriptors.count * 11)
+    var bytes: [UInt8] = [UInt8(dataLength >> 8), UInt8(dataLength & 0xFF), firstSession, lastSession]
+    for d in descriptors {
+        precondition(d.count == 11)
+        bytes += d
+    }
+    return Data(bytes)
+}
+
+/// 11-byte descriptor: session, adr/control, tno, point, min, sec, frame, zero, pmin, psec, pframe.
+func tocDescriptor(
+    session: UInt8, adr: UInt8 = 1, control: UInt8, point: UInt8, lba: Int
+) -> [UInt8] {
+    let frames = lba + 150
+    return [
+        session, adr << 4 | control, 0, point,
+        0, 0, 0, 0,
+        UInt8(frames / (60 * 75)), UInt8((frames / 75) % 60), UInt8(frames % 75),
+    ]
+}
+
+/// Unique scratch directory for a test; removed by the caller via defer.
+func makeTempDir() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("spindle-tests")
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}

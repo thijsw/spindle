@@ -31,17 +31,17 @@ permit the raw drive access accurate ripping requires.
 
 ## Building
 
-Requires macOS 14+ and the Swift 6 toolchain (Xcode or Command Line Tools).
+Requires macOS 14+ to run and Xcode 16+ to build.
+
+The app lives in `Spindle.xcodeproj` (open it and hit Run); all logic lives
+in the `SpindleCore` local Swift package.
 
 ```sh
-swift build                     # everything
-swift run spindle-tests         # test suite (plain executable — CLT has no XCTest)
-Scripts/make-app.sh             # assemble dist/Spindle.app (debug, ad-hoc signed)
-Scripts/make-app.sh release     # universal release build
+open Spindle.xcodeproj                  # develop in Xcode
+(cd SpindleCore && swift test)          # Swift Testing suite, headless
+Scripts/make-app.sh                     # assemble dist/Spindle.app (Debug)
+Scripts/make-app.sh release             # universal Release build
 ```
-
-With only Command Line Tools installed and an Xcode.app present but
-unlicensed, prefix commands with `DEVELOPER_DIR=/Library/Developer/CommandLineTools`.
 
 ### Release packaging
 
@@ -53,7 +53,8 @@ Scripts/make-dmg.sh
 
 ## Development CLI
 
-Every subsystem is exercisable headless via `spindle-cli`:
+Every subsystem is exercisable headless via `spindle-cli` (run from
+`SpindleCore/`):
 
 ```sh
 swift run spindle-cli detect            # watch disc insertions
@@ -67,7 +68,8 @@ swift run spindle-cli push library --to sftp://user@host/srv/music
 
 ## Architecture
 
-A single SPM package; the app is a thin SwiftUI shell over `SpindleCore`:
+`Spindle.xcodeproj` builds the thin SwiftUI app shell in `Spindle/`; the
+`SpindleCore/` package holds everything else:
 
 | Module | Purpose |
 | --- | --- |
@@ -80,7 +82,7 @@ A single SPM package; the app is a thin SwiftUI shell over `SpindleCore`:
 | `Naming` | Filename templates and path sanitization |
 | `Transfer` | Local-folder and SFTP destinations, Keychain |
 | `SpindleCore` | The pipeline coordinator orchestrating all of the above |
-| `SpindleApp` | SwiftUI app |
+| `Spindle/` (app) | SwiftUI shell: main window, release picker, Settings |
 
 Dependencies: [Citadel](https://github.com/orlandos-nl/Citadel) (MIT) for SFTP.
 Everything else is Apple frameworks.

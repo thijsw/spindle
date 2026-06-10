@@ -2,11 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "Spindle",
+    name: "SpindleCore",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "spindle-cli", targets: ["spindle-cli"]),
-        .executable(name: "SpindleApp", targets: ["SpindleApp"]),
         .library(name: "SpindleCore", targets: ["SpindleCore"]),
     ],
     dependencies: [
@@ -69,21 +68,12 @@ let package = Package(
             dependencies: ["DiscDrive", "Metadata", "RipEngine", "Encoding", "Naming", "Verification", "Transfer"]
         ),
 
-        .executableTarget(
-            name: "SpindleApp",
-            dependencies: ["SpindleCore"],
-            linkerSettings: [
-                .linkedFramework("AppKit"),
-                .linkedFramework("SwiftUI"),
-                .linkedFramework("UserNotifications"),
+        .testTarget(
+            name: "SpindleCoreTests",
+            dependencies: [
+                "DiscDrive", "Metadata", "RipEngine", "Encoding", "Naming",
+                "Verification", "Transfer", "SpindleCore",
             ]
-        ),
-
-        // The CLT toolchain ships no XCTest/Swift Testing, so tests run as a
-        // plain executable: `swift run spindle-tests`.
-        .executableTarget(
-            name: "spindle-tests",
-            dependencies: ["DiscDrive", "Metadata", "RipEngine", "Encoding", "Naming", "Verification", "Transfer", "SpindleCore"]
         ),
     ]
 )

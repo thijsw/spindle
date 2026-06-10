@@ -1,43 +1,40 @@
 #!/bin/zsh
-# Builds Spindle.app from the SPM package.
+# Builds dist/Spindle.app via xcodebuild.
 #
 # Usage:
-#   Scripts/make-app.sh                 # debug build, ad-hoc signed
-#   Scripts/make-app.sh release         # optimized universal build
+#   Scripts/make-app.sh                 # Debug, current arch
+#   Scripts/make-app.sh release         # Release, universal (arm64 + x86_64)
 #   SIGN_IDENTITY="Developer ID Application: …" Scripts/make-app.sh release
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-CONFIG="${1:-debug}"
-BUILD_ARGS=(--product SpindleApp)
-if [[ "$CONFIG" == "release" ]]; then
-    BUILD_ARGS+=(-c release --arch arm64 --arch x86_64)
-    BIN_DIR=".build/apple/Products/Release"
+EXTRA_ARGS=()
+if [[ "${1:-debug}" == "release" ]]; then
+    CONFIG="Release"
+    EXTRA_ARGS+=(ONLY_ACTIVE_ARCH=NO 'ARCHS=arm64 x86_64')
 else
-    BUILD_ARGS+=(-c debug)
-    BIN_DIR=".build/debug"
+    CONFIG="Debug"
 fi
 
 echo "Building ($CONFIG)…"
-swift build "${BUILD_ARGS[@]}"
+xcodebuild \
+    -project Spindle.xcodeproj \
+    -scheme Spindle \
+    -configuration "$CONFIG" \
+    -destination 'platform=macOS' \
+    SYMROOT="$PWD/.build/xcode" \
+    "${EXTRA_ARGS[@]}" \
+    -quiet build
 
-APP="dist/Spindle.app"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p dist
+rm -rf dist/Spindle.app
+cp -R ".build/xcode/$CONFIG/Spindle.app" dist/
 
-cp "$BIN_DIR/SpindleApp" "$APP/Contents/MacOS/Spindle"
-cp Resources/Info.plist "$APP/Contents/Info.plist"
-cp Resources/Spindle.icns "$APP/Contents/Resources/Spindle.icns"
-
-# Regenerate the icon if it's missing.
-if [[ ! -f Resources/Spindle.icns ]]; then
-    swift Scripts/make-icon.swift Resources
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    echo "Re-signing with: $SIGN_IDENTITY"
+    codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" dist/Spindle.app
 fi
 
-IDENTITY="${SIGN_IDENTITY:--}"
-echo "Signing with: $IDENTITY"
-codesign --force --options runtime --sign "$IDENTITY" "$APP"
-
-echo "Built $APP"
-codesign -dv "$APP" 2>&1 | head -3
+echo "Built dist/Spindle.app"
+codesign -dv dist/Spindle.app 2>&1 | head -3
