@@ -21,7 +21,13 @@ let package = Package(
             ]
         ),
 
-        .target(name: "Metadata", dependencies: ["DiscDrive"]),
+        .target(
+            name: "Metadata",
+            dependencies: ["DiscDrive"],
+            linkerSettings: [
+                .linkedFramework("DiscRecording"),
+            ]
+        ),
 
         .target(name: "RipEngine", dependencies: ["DiscDrive"]),
 

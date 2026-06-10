@@ -2,5 +2,6 @@
 
 tocParserTests()
 discIDTests()
+metadataTests()
 await ripEngineTests()
 Harness.finish()

@@ -14,6 +14,12 @@ commands:
   drives            list present CD media and drive identity
   toc [disk]        read and print the table of contents
   discid [disk]     compute the MusicBrainz DiscID and TOC string
+  identify [disk] [options]
+                    look up the disc on MusicBrainz
+    --pick <n>      show full tags for candidate n
+    --art <file>    download cover art for the picked release
+    --toc "<str>"   use a TOC string ("first last leadout offsets…")
+                    instead of reading a disc
   rip [disk] [options]
                     rip audio tracks to WAV files
     --out <dir>     output directory (default: ./rip)
@@ -134,8 +140,136 @@ case "discid":
     print("TOC string:         \(discTOC.musicBrainzTOCString)")
     print("Lookup URL:         https://musicbrainz.org/ws/2/discid/\(discTOC.musicBrainzDiscID)?fmt=json")
 
+case "identify":
+    let rest = Array(arguments.dropFirst())
+    var disk: String?
+    var pick: Int?
+    var artPath: String?
+    var tocString: String?
+
+    var i = 0
+    while i < rest.count {
+        switch rest[i] {
+        case "--pick":
+            i += 1
+            guard i < rest.count, let n = Int(rest[i]) else { fail("--pick needs a number") }
+            pick = n
+        case "--art":
+            i += 1
+            guard i < rest.count else { fail("--art needs a file path") }
+            artPath = rest[i]
+        case "--toc":
+            i += 1
+            guard i < rest.count else { fail("--toc needs a TOC string") }
+            tocString = rest[i]
+        default:
+            if disk == nil, !rest[i].hasPrefix("--") {
+                disk = rest[i]
+            } else {
+                fail("Unknown option: \(rest[i])")
+            }
+        }
+        i += 1
+    }
+
+    let discTOC: DiscTOC
+    let audioTrackCount: Int
+
+    if let tocString {
+        let numbers = tocString.split(separator: " ").compactMap { Int($0) }
+        guard numbers.count >= 4 else { fail("TOC string needs: first last leadout offsets…") }
+        let parsed = DiscTOC(
+            firstTrack: numbers[0],
+            lastTrack: numbers[1],
+            leadOutOffset: numbers[2],
+            trackOffsets: Array(numbers.dropFirst(3))
+        )
+        guard parsed.trackOffsets.count == parsed.lastTrack - parsed.firstTrack + 1 else {
+            fail("TOC string has \(parsed.trackOffsets.count) offsets for tracks \(parsed.firstTrack)–\(parsed.lastTrack)")
+        }
+        discTOC = parsed
+        audioTrackCount = parsed.trackOffsets.count
+    } else {
+        let bsd = resolveDisc(disk)
+        let drive = try CDDrive(bsdName: bsd)
+        let toc = try TOC.parse(fullTOC: try await drive.readFullTOC())
+        guard let fromDisc = DiscTOC(toc: toc) else { fail("Disc has no audio tracks.") }
+        discTOC = fromDisc
+        audioTrackCount = toc.audioTracks.count
+
+        if let packs = ((try? await drive.readCDTextPacks()) ?? nil),
+           let cdText = CDTextParser.parse(packs: packs) {
+            print("CD-TEXT: \(cdText.albumPerformer ?? "?") — \(cdText.albumTitle ?? "?")")
+        }
+    }
+
+    print("DiscID \(discTOC.musicBrainzDiscID) — querying MusicBrainz…")
+    let client = MusicBrainzClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+    let result = try await client.lookup(disc: discTOC)
+
+    let releases: [MBRelease]
+    switch result {
+    case .matched(let r):
+        print("Exact DiscID match: \(r.count) release(s)")
+        releases = r
+    case .fuzzy(let r):
+        print("DiscID unknown; fuzzy TOC match: \(r.count) candidate(s)")
+        releases = r
+    case .none:
+        print("No matches on MusicBrainz.")
+        exit(0)
+    }
+
+    let scorer = ReleaseScorer()
+    let ranked = scorer.rank(releases, discID: discTOC.musicBrainzDiscID, audioTrackCount: audioTrackCount)
+    for (index, item) in ranked.enumerated() {
+        let r = item.release
+        let media = (r.media ?? []).first
+        print(String(
+            format: "%2d. %@ — %@ (%@, %@, %@, %@ tracks)%@",
+            index + 1,
+            (r.artistCredit ?? []).joinedName,
+            r.title,
+            r.date ?? "no date",
+            r.country ?? "??",
+            media?.format ?? "?",
+            String(media?.trackCount ?? 0),
+            index == 0 ? String(format: "  [confidence %.0f%%]", item.confidence * 100) : ""
+        ))
+    }
+
+    if let pick {
+        guard pick >= 1, pick <= ranked.count else { fail("--pick out of range") }
+        let release = ranked[pick - 1].release
+        guard let album = ResolvedAlbum(
+            release: release,
+            discID: discTOC.musicBrainzDiscID,
+            audioTrackCount: audioTrackCount
+        ) else { fail("Could not resolve that release.") }
+
+        print("\n\(album.albumArtist) — \(album.album)")
+        print("\(album.date ?? "") \(album.label ?? "") \(album.catalogNumber ?? "") disc \(album.discNumber)/\(album.discTotal)")
+        for track in album.tracks {
+            print(String(format: "  %02d. %@ — %@", track.position, track.artist, track.title))
+        }
+
+        if let artPath {
+            let artClient = CoverArtClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+            if let art = await artClient.fetchArt(
+                releaseMBID: album.releaseMBID,
+                releaseGroupMBID: album.releaseGroupMBID,
+                fallbackQuery: "\(album.albumArtist) \(album.album)"
+            ) {
+                try art.data.write(to: URL(fileURLWithPath: artPath))
+                print("Cover art (\(art.source.rawValue), \(art.data.count / 1024) KB) → \(artPath)")
+            } else {
+                print("No cover art found.")
+            }
+        }
+    }
+
 case "rip":
-    var rest = Array(arguments.dropFirst())
+    let rest = Array(arguments.dropFirst())
     var outDir = URL(fileURLWithPath: "rip")
     var mode = RipConfiguration.Mode.secureDefault
     var offset = 0
