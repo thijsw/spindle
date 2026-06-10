@@ -48,7 +48,7 @@ public enum JobStage: Sendable, Equatable {
 public struct TrackState: Sendable, Equatable, Identifiable {
     public enum Status: Sendable, Equatable {
         case waiting
-        case ripping(Double) // 0...1
+        case ripping
         case ripped
         case verified(Bool) // CTDB match?
         case encoded

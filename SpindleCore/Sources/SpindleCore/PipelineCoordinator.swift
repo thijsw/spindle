@@ -356,22 +356,21 @@ public actor PipelineCoordinator {
         }
     }
 
-    private var lastProgressUpdate = ContinuousClock.now
+
+    private var rippingTrackNumber: Int?
 
     private func ripProgress(jobID: JobID, progress: RipProgress) {
         guard let job = jobs[jobID] else { return }
-        // Coalesce UI updates to ~1 Hz: each one re-emits the whole job
-        // snapshot and re-renders every window observing the model, so a
-        // higher rate just backs up the main thread. A per-track rip takes
-        // minutes, so 1 Hz percentage updates are plenty.
-        let now = ContinuousClock.now
-        guard now - lastProgressUpdate > .milliseconds(1000) || progress.fraction == 1 else { return }
-        lastProgressUpdate = now
-        updateTrack(
-            job,
-            number: progress.trackNumber,
-            status: progress.fraction >= 1 ? .ripped : .ripping(progress.fraction)
-        )
+        // Only publish on the discrete transition into a new track — never
+        // per-fraction. Re-emitting the whole job snapshot on every progress
+        // tick re-renders every window observing the model (main, Settings,
+        // menu bar) and saturates the main thread. A rip is minutes long;
+        // the UI shows an indeterminate "ripping" indicator on the active
+        // track and advances track-by-track, which is all the model churn
+        // the windows can afford.
+        guard progress.trackNumber != rippingTrackNumber, progress.fraction < 1 else { return }
+        rippingTrackNumber = progress.trackNumber
+        updateTrack(job, number: progress.trackNumber, status: .ripping)
     }
 
     // MARK: Identification (concurrent with rip)
