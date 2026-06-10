@@ -26,9 +26,14 @@ final class AppModel {
 
     private var coordinator: PipelineCoordinator?
     private var jobStore: JobStore?
+    private let powerAssertion = PowerAssertion()
 
     init() {
         self.preferences = PreferencesStore.load()
+    }
+
+    var hasActiveJobs: Bool {
+        jobs.contains { !$0.stage.isTerminal }
     }
 
     /// The job the main window focuses on: the most recent non-terminal one.
@@ -47,6 +52,8 @@ final class AppModel {
 
     func start() {
         guard coordinator == nil else { return }
+        AppDelegate.hasActiveWork = { [weak self] in self?.hasActiveJobs ?? false }
+        cleanUpStaleStaging()
         do {
             let store = JobStore()
             let coordinator = PipelineCoordinator(
@@ -82,6 +89,12 @@ final class AppModel {
                 if pickerJobID == snapshot.id { pickerJobID = nil }
                 Task { await self.refreshHistory() }
             }
+            // Keep the Mac awake while any disc is in flight.
+            if hasActiveJobs {
+                powerAssertion.activate()
+            } else {
+                powerAssertion.release()
+            }
 
         case .releaseChoiceNeeded(let jobID):
             // Don't steal focus while another picker is open.
@@ -102,6 +115,18 @@ final class AppModel {
         guard let jobID = pickerJobID, let coordinator else { return }
         pickerJobID = nil
         Task { await coordinator.declineReleaseChoice(jobID: jobID) }
+    }
+
+    /// Staging directories survive crashes; anything present at launch is an
+    /// orphan (no rip is resumable across launches in v1).
+    private func cleanUpStaleStaging() {
+        let staging = PreferencesStore.applicationSupportURL.appendingPathComponent("Staging")
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: staging, includingPropertiesForKeys: nil
+        ) else { return }
+        for entry in entries {
+            try? FileManager.default.removeItem(at: entry)
+        }
     }
 
     private func refreshHistory() async {
