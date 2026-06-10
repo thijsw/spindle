@@ -185,12 +185,13 @@ private func wavData(_ url: URL) -> Data {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        // A 150-sector scratch spanning the track-1/track-2 boundary. Naive
-        // per-sector probing would cost one failing read per damaged sector
-        // (1–2 minutes each on real drives); damage-run mapping must cross
-        // it in a logarithmic number of contacts, zero-fill it exactly, and
-        // never touch it again in the second pass.
-        let damage = 90 ..< 240
+        // A 240-sector scratch spanning three chunks and the track boundary.
+        // Naive per-sector probing would cost one failing read per damaged
+        // sector (1–2 minutes each on real drives); damage-run mapping plus
+        // continuation mode must cross it in a bounded number of contacts,
+        // zero-fill it sector-exactly, and never touch it again in later
+        // passes.
+        let damage = 90 ..< 330
         let device = MockCDDevice(leadOut: leadOut, errorSectors: Set(damage))
         let config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2), chunkSectors: 150)
         let result = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir)
@@ -203,7 +204,7 @@ private func wavData(_ url: URL) -> Data {
         #expect(wavData(result.tracks[0].wavURL) == expected1, "track 1: healthy sectors exact, damage zeroed")
 
         var expected2 = expectedAudio(trackSectors: 150 ..< 400, sampleOffset: 0, leadOut: leadOut)
-        expected2.replaceSubrange(0 ..< 90 * 2352, with: Data(count: 90 * 2352))
+        expected2.replaceSubrange(0 ..< 180 * 2352, with: Data(count: 180 * 2352))
         #expect(wavData(result.tracks[1].wavURL) == expected2, "track 2: damage zeroed, rest exact")
 
         // Contact budget: two compare passes over 400 sectors with a

@@ -359,6 +359,20 @@ public struct TrackRipper: Sendable {
     ) async -> (data: Data, unrecoverable: [Int]) {
         let knownBad = await damage.knownBadRuns(intersecting: sectors)
 
+        // A charted run ending exactly at our start means the scratch
+        // continues into this request: skip the doomed whole-range attempts
+        // and resume crossing it with large blocks immediately.
+        if sectors.lowerBound > readableSectors.lowerBound {
+            let touching = await damage.knownBadRuns(
+                intersecting: (sectors.lowerBound - 1) ..< sectors.lowerBound
+            )
+            if touching.contains(where: { $0.upperBound == sectors.lowerBound }) {
+                return await mapDamage(
+                    sectors, areas: areas, health: health, knownBad: knownBad, continuingRun: true
+                )
+            }
+        }
+
         // Fast path: no known damage inside — try the whole range.
         if knownBad.isEmpty {
             let started = ContinuousClock.now
@@ -384,7 +398,11 @@ public struct TrackRipper: Sendable {
     }
 
     private func mapDamage(
-        _ sectors: Range<Int>, areas: SectorAreas, health: RipHealth, knownBad: [Range<Int>]
+        _ sectors: Range<Int>,
+        areas: SectorAreas,
+        health: RipHealth,
+        knownBad: [Range<Int>],
+        continuingRun: Bool = false
     ) async -> (data: Data, unrecoverable: [Int]) {
         let stride = areas.bytesPerSector
         var out = Data(count: sectors.count * stride) // zero-filled canvas
@@ -398,6 +416,9 @@ public struct TrackRipper: Sendable {
         var cursor = sectors.lowerBound
         var goodStep = 8
         var consecutiveGoodSingles = 0
+        // When continuing a charted scratch, cross it one large block per
+        // failing probe instead of rediscovering it chunk by chunk.
+        var startInBadMode = continuingRun
 
         while cursor < sectors.upperBound, !Task.isCancelled {
             // Confirmed damage: zero-fill without touching the device.
@@ -409,6 +430,19 @@ public struct TrackRipper: Sendable {
             }
             let nextKnownBad = knownBad.map(\.lowerBound).filter { $0 > cursor }.min()
                 ?? sectors.upperBound
+
+            if startInBadMode {
+                startInBadMode = false
+                let crossed = await crossBadRun(
+                    from: cursor, in: sectors, areas: areas,
+                    initialBlock: 64, blockCap: 256,
+                    out: &out, bad: &bad
+                )
+                cursor = crossed
+                goodStep = 8
+                consecutiveGoodSingles = 0
+                continue
+            }
 
             let n = min(goodStep, nextKnownBad - cursor, sectors.upperBound - cursor)
             if let buffer = try? await device.readSectors(cursor ..< cursor + n, areas: areas) {
@@ -433,41 +467,62 @@ public struct TrackRipper: Sendable {
 
             // cursor is confirmed unreadable: cross the run with exponential
             // zero-blocks, one failing probe per block.
-            let runStart = cursor
-            var zeroBlock = 1
-            while cursor < sectors.upperBound, !Task.isCancelled {
-                let blockEnd = min(cursor + zeroBlock, sectors.upperBound)
-                bad.append(contentsOf: cursor ..< blockEnd)
-                let lastBlock = cursor ..< blockEnd
-                cursor = blockEnd
-                guard cursor < sectors.upperBound else { break }
-
-                if let probe = try? await device.readSectors(cursor ..< cursor + 1, areas: areas) {
-                    fill(probe, at: cursor)
-                    cursor += 1
-                    // The run ended inside the last zero block: recover its
-                    // readable tail so the boundary is sector-exact.
-                    let recovered = await recoverTail(of: lastBlock, areas: areas)
-                    if let recovered {
-                        fill(recovered.buffer, at: recovered.from)
-                        bad.removeAll { $0 >= recovered.from && $0 < lastBlock.upperBound }
-                    }
-                    let runEnd = recovered?.from ?? lastBlock.upperBound
-                    await damage.recordBadRun(runStart ..< runEnd)
-                    break
-                }
-                zeroBlock = min(zeroBlock * 2, 32)
-            }
-            if cursor >= sectors.upperBound {
-                // Run reaches the end of this request; it may continue into
-                // the next chunk (which will pay one probe to find out).
-                await damage.recordBadRun(runStart ..< sectors.upperBound)
-            }
+            cursor = await crossBadRun(
+                from: cursor, in: sectors, areas: areas,
+                initialBlock: 1, blockCap: 32,
+                out: &out, bad: &bad
+            )
             goodStep = 1
             consecutiveGoodSingles = 0
         }
 
         return (out, bad.sorted())
+    }
+
+    /// Crosses a bad run starting at `from`: zero-fills exponentially
+    /// growing blocks at one failing probe each, retro-bisecting the final
+    /// block for a sector-exact boundary. Returns the new cursor.
+    private func crossBadRun(
+        from: Int,
+        in sectors: Range<Int>,
+        areas: SectorAreas,
+        initialBlock: Int,
+        blockCap: Int,
+        out: inout Data,
+        bad: inout [Int]
+    ) async -> Int {
+        let stride = areas.bytesPerSector
+        var cursor = from
+        var zeroBlock = initialBlock
+        while cursor < sectors.upperBound, !Task.isCancelled {
+            let blockEnd = min(cursor + zeroBlock, sectors.upperBound)
+            bad.append(contentsOf: cursor ..< blockEnd)
+            let lastBlock = cursor ..< blockEnd
+            cursor = blockEnd
+            guard cursor < sectors.upperBound else { break }
+
+            if let probe = try? await device.readSectors(cursor ..< cursor + 1, areas: areas) {
+                let probeDest = (cursor - sectors.lowerBound) * stride
+                out.replaceSubrange(probeDest ..< probeDest + probe.data.count, with: probe.data)
+                cursor += 1
+                // The run ended inside the last zero block: recover its
+                // readable tail so the boundary is sector-exact.
+                let recovered = await recoverTail(of: lastBlock, areas: areas)
+                if let recovered {
+                    let dest = (recovered.from - sectors.lowerBound) * stride
+                    out.replaceSubrange(dest ..< dest + recovered.buffer.data.count, with: recovered.buffer.data)
+                    bad.removeAll { $0 >= recovered.from && $0 < lastBlock.upperBound }
+                }
+                let runEnd = recovered?.from ?? lastBlock.upperBound
+                await damage.recordBadRun(from ..< runEnd)
+                return cursor
+            }
+            zeroBlock = min(zeroBlock * 2, blockCap)
+        }
+        // Run reaches the end of this request; it may continue into the
+        // next chunk (continuation mode picks it up there).
+        await damage.recordBadRun(from ..< sectors.upperBound)
+        return cursor
     }
 
     /// Binary-searches the readable tail of a zero-filled block: the
