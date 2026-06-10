@@ -38,15 +38,24 @@ public struct DiscRipper: Sendable {
         self.config = config
     }
 
-    /// Probes whether the drive returns C2 error pointers. Some drives reject
-    /// the request outright; those fall back to compare-based secure reads.
+    /// Probes whether the drive returns *usable* C2 error pointers.
+    ///
+    /// Merely succeeding at the ioctl is not enough: some drives (the Apple
+    /// SuperDrive among them) accept the request but fill the entire
+    /// transfer with garbage. C2 is trusted only if the audio portion of a
+    /// C2 read is byte-identical to a plain read of the same sectors and
+    /// the error flags aren't lighting up wall-to-wall on a readable area.
     public func probeC2(firstAudioLBA: Int) async -> Bool {
-        do {
-            _ = try await device.readSectors(firstAudioLBA ..< firstAudioLBA + 1, areas: [.user, .errorFlags])
-            return true
-        } catch {
-            return false
-        }
+        let count = 32
+        let range = firstAudioLBA ..< firstAudioLBA + count
+        guard let plain = try? await device.readSectors(range, areas: .user),
+              let withC2 = try? await device.readSectors(range, areas: [.user, .errorFlags])
+        else { return false }
+
+        guard withC2.allAudio() == plain.allAudio() else { return false }
+
+        let flagged = (0 ..< count).count { withC2.hasC2Error(sector: $0) }
+        return flagged < count / 4
     }
 
     public struct DiscRipResult: Sendable {

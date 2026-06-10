@@ -21,9 +21,23 @@ public actor CDDrive: CDDeviceIO {
         close(fd)
     }
 
+    /// Set SPINDLE_TRACE_IO=1 to log every device read slower than 500 ms.
+    private static let traceIO = ProcessInfo.processInfo.environment["SPINDLE_TRACE_IO"] != nil
+
     public func readSectors(_ range: Range<Int>, areas: SectorAreas) throws -> SectorBuffer {
         precondition(!range.isEmpty)
         precondition(areas.contains(.user) || areas.contains(.errorFlags) || areas.contains(.subChannelQ))
+        let traceStart = Self.traceIO ? ContinuousClock.now : nil
+        defer {
+            if let traceStart {
+                let elapsed = ContinuousClock.now - traceStart
+                if elapsed > .milliseconds(500) {
+                    FileHandle.standardError.write(Data(
+                        "[trace] read \(range.lowerBound)..<\(range.upperBound) areas=\(areas.rawValue) took \(elapsed)\n".utf8
+                    ))
+                }
+            }
+        }
 
         let length = range.count * areas.bytesPerSector
         var buffer = Data(count: length)

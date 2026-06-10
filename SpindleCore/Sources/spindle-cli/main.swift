@@ -335,14 +335,17 @@ case "rip":
     let drive = try CDDrive(bsdName: bsd)
     var toc = try TOC.parse(fullTOC: try await drive.readFullTOC())
     if let onlyTrack {
-        guard toc.tracks.contains(where: { $0.number == onlyTrack && $0.isAudio }) else {
+        guard let track = toc.tracks.first(where: { $0.number == onlyTrack && $0.isAudio }) else {
             fail("No audio track \(onlyTrack) on this disc.")
         }
+        // Keep the track's real end: with later tracks filtered out, its
+        // length would otherwise extend to the session lead-out.
+        let end = track.startLBA + toc.lengthInSectors(of: track)
         toc = TOC(
-            tracks: toc.tracks.filter { $0.number == onlyTrack },
-            sessionLeadOuts: toc.sessionLeadOuts,
-            firstSession: toc.firstSession,
-            lastSession: toc.lastSession
+            tracks: [track],
+            sessionLeadOuts: [track.session: end],
+            firstSession: track.session,
+            lastSession: track.session
         )
     }
 
@@ -575,6 +578,117 @@ case "scan-offset":
         }
     } else {
         print("\nNo offset matches every track — the disc may be damaged or a different pressing.")
+    }
+
+case "bench":
+    // Hidden: isolates rip-loop throughput layer by layer.
+    let bsd = resolveDisc(arguments.dropFirst().first)
+    let drive = try CDDrive(bsdName: bsd)
+    try? await drive.setSpeed(0xFFFF)
+    let start = 60000
+    let total = 1500
+    let chunk = 150
+
+    func bench(_ label: String, _ body: () async throws -> Void) async rethrows {
+        let t0 = ContinuousClock.now
+        try await body()
+        let dt = Double((ContinuousClock.now - t0).components.attoseconds) / 1e18
+            + Double((ContinuousClock.now - t0).components.seconds) * 0 // avoid drift; use duration directly below
+        _ = dt
+        let elapsed = ContinuousClock.now - t0
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let kbs = Double(total) * 2352 / seconds / 1000
+        print(String(format: "%@: %6.1f KB/s (%.1fx)", label, kbs, kbs / 176.4))
+    }
+
+    try await bench("1. actor readSectors only       ") {
+        var lba = start
+        while lba < start + total {
+            _ = try await drive.readSectors(lba ..< min(lba + chunk, start + total), areas: .user)
+            lba += chunk
+        }
+    }
+
+    try await bench("2. + allAudio + checksums       ") {
+        var lba = start + 2000
+        let end = start + 2000 + total
+        var checksums = ChecksumAccumulator(totalSamples: total * 588, isFirstTrack: false, isLastTrack: false)
+        while lba < end {
+            let buffer = try await drive.readSectors(lba ..< min(lba + chunk, end), areas: .user)
+            checksums.update(buffer.allAudio())
+            lba += chunk
+        }
+        _ = checksums.finalize()
+    }
+
+    try await bench("3. + WAV write                  ") {
+        var lba = start + 4000
+        let end = start + 4000 + total
+        let writer = try WAVWriter(
+            url: URL(fileURLWithPath: "/tmp/spindle-bench.wav"),
+            expectedDataBytes: total * 2352
+        )
+        var checksums = ChecksumAccumulator(totalSamples: total * 588, isFirstTrack: false, isLastTrack: false)
+        while lba < end {
+            let buffer = try await drive.readSectors(lba ..< min(lba + chunk, end), areas: .user)
+            let audio = buffer.allAudio()
+            checksums.update(audio)
+            try writer.append(audio)
+            lba += chunk
+        }
+        try writer.finish()
+        try? FileManager.default.removeItem(atPath: "/tmp/spindle-bench.wav")
+    }
+
+    try await bench("4. full TrackRipper path        ") {
+        let toc = TOC(
+            tracks: [TOCTrack(number: 1, session: 1, startLBA: start + 6000, isAudio: true, hasPreEmphasis: false)],
+            sessionLeadOuts: [1: start + 6000 + total],
+            firstSession: 1,
+            lastSession: 1
+        )
+        let ripper = TrackRipper(
+            device: drive,
+            config: RipConfiguration(mode: .burst),
+            readableSectors: 0 ..< start + 6000 + total,
+            useC2: false
+        )
+        _ = try await ripper.rip(
+            track: toc.tracks[0], toc: toc, isFirstAudio: false, isLastAudio: false,
+            to: URL(fileURLWithPath: "/tmp/spindle-bench2.wav"),
+            progress: { _ in }
+        )
+        try? FileManager.default.removeItem(atPath: "/tmp/spindle-bench2.wav")
+    }
+
+case "bench-sustained":
+    // Hidden: reads a long span and prints the rate of each 1500-sector
+    // window, with the DriveMonitor hold active like the real rip command.
+    let bsd = resolveDisc(arguments.dropFirst().first)
+    let monitor = try DriveMonitor()
+    try? await monitor.hold(bsdName: bsd)
+    defer { monitor.release(bsdName: bsd) }
+    let drive = try CDDrive(bsdName: bsd)
+    try? await drive.setSpeed(0xFFFF)
+
+    let start = 14011 // track 2 start
+    let total = 12000
+    let chunk = 150
+    var lba = start
+    var windowStart = ContinuousClock.now
+    var windowSectors = 0
+    while lba < start + total {
+        _ = try await drive.readSectors(lba ..< min(lba + chunk, start + total), areas: .user)
+        lba += chunk
+        windowSectors += chunk
+        if windowSectors >= 1500 {
+            let elapsed = ContinuousClock.now - windowStart
+            let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            let kbs = Double(windowSectors) * 2352 / seconds / 1000
+            print(String(format: "  lba %6d  %6.1f KB/s (%.1fx)", lba, kbs, kbs / 176.4))
+            windowStart = ContinuousClock.now
+            windowSectors = 0
+        }
     }
 
 case "push":
