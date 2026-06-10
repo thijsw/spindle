@@ -76,6 +76,23 @@ public struct TrackRipper: Sendable {
             c2SectorsFlagged += flagged
             return c2SectorsSeen >= 150 && c2SectorsFlagged * 20 > c2SectorsSeen
         }
+
+        // Confirmed-unreadable runs (absolute LBA ranges). Later passes and
+        // settles zero-fill these without touching the device again — a
+        // failing read costs the drive's full internal retry storm.
+        private var badRuns: [Range<Int>] = []
+
+        func recordBadRun(_ run: Range<Int>) {
+            guard !run.isEmpty else { return }
+            badRuns.append(run)
+        }
+
+        func knownBadRuns(intersecting range: Range<Int>) -> [Range<Int>] {
+            badRuns.compactMap { run in
+                let overlap = run.clamped(to: range)
+                return overlap.isEmpty ? nil : overlap
+            }.sorted { $0.lowerBound < $1.lowerBound }
+        }
     }
 
     public func rip(
@@ -309,38 +326,151 @@ public struct TrackRipper: Sendable {
 
     // MARK: Resilient device reads
 
-    /// Reads a sector range, bisecting on failure so a single damaged sector
-    /// can't fail (or stall) a whole chunk: unreadable single sectors are
-    /// zero-filled and reported, and the first failure drops the drive to
-    /// low speed where damaged media behaves best.
+    /// Reads a sector range, surviving unreadable sectors.
+    ///
+    /// The cost model: a read that *fails* costs the drive's entire internal
+    /// retry storm (1–2 minutes on some drives), so the budget is failing
+    /// contacts, not sectors. Healthy spans are read with exponentially
+    /// growing requests; damage is crossed by zero-filling exponentially
+    /// growing blocks at one failing probe each, with the final block
+    /// retro-bisected so run boundaries stay sector-exact. Confirmed runs
+    /// are remembered and never touched again (pass 2, settles).
     private func resilientRead(
         _ sectors: Range<Int>, areas: SectorAreas, health: RipHealth
     ) async -> (data: Data, unrecoverable: [Int]) {
-        let started = ContinuousClock.now
-        if let buffer = try? await device.readSectors(sectors, areas: areas) {
-            // Success, but slower than the drive's own retry storm allows:
-            // drop to low speed so the rest of the damaged region reads
-            // gently instead of grinding at full speed.
-            if ContinuousClock.now - started > Self.struggleThreshold,
-               await health.noteStruggle() {
-                try? await device.setSpeed(Self.damagedRegionSpeed)
-            }
-            return (buffer.data, [])
-        }
-        if await health.noteStruggle() {
-            try? await device.setSpeed(Self.damagedRegionSpeed)
-            // One retry of the whole range at low speed before bisecting.
+        let knownBad = await health.knownBadRuns(intersecting: sectors)
+
+        // Fast path: no known damage inside — try the whole range.
+        if knownBad.isEmpty {
+            let started = ContinuousClock.now
             if let buffer = try? await device.readSectors(sectors, areas: areas) {
+                // Success, but slower than the drive's own retry storm
+                // allows: drop to low speed for the rest of the track.
+                if ContinuousClock.now - started > Self.struggleThreshold,
+                   await health.noteStruggle() {
+                    try? await device.setSpeed(Self.damagedRegionSpeed)
+                }
                 return (buffer.data, [])
             }
+            if await health.noteStruggle() {
+                try? await device.setSpeed(Self.damagedRegionSpeed)
+                // One retry of the whole range at low speed.
+                if let buffer = try? await device.readSectors(sectors, areas: areas) {
+                    return (buffer.data, [])
+                }
+            }
         }
-        guard sectors.count > 1 else {
-            return (Data(count: areas.bytesPerSector), [sectors.lowerBound])
+
+        return await mapDamage(sectors, areas: areas, health: health, knownBad: knownBad)
+    }
+
+    private func mapDamage(
+        _ sectors: Range<Int>, areas: SectorAreas, health: RipHealth, knownBad: [Range<Int>]
+    ) async -> (data: Data, unrecoverable: [Int]) {
+        let stride = areas.bytesPerSector
+        var out = Data(count: sectors.count * stride) // zero-filled canvas
+        var bad: [Int] = []
+
+        func fill(_ buffer: SectorBuffer, at lba: Int) {
+            let dest = (lba - sectors.lowerBound) * stride
+            out.replaceSubrange(dest ..< dest + buffer.data.count, with: buffer.data)
         }
-        let mid = sectors.lowerBound + sectors.count / 2
-        let left = await resilientRead(sectors.lowerBound ..< mid, areas: areas, health: health)
-        let right = await resilientRead(mid ..< sectors.upperBound, areas: areas, health: health)
-        return (left.data + right.data, left.unrecoverable + right.unrecoverable)
+
+        var cursor = sectors.lowerBound
+        var goodStep = 8
+        var consecutiveGoodSingles = 0
+
+        while cursor < sectors.upperBound, !Task.isCancelled {
+            // Confirmed damage: zero-fill without touching the device.
+            if let run = knownBad.first(where: { $0.contains(cursor) }) {
+                let span = cursor ..< min(run.upperBound, sectors.upperBound)
+                bad.append(contentsOf: span)
+                cursor = span.upperBound
+                continue
+            }
+            let nextKnownBad = knownBad.map(\.lowerBound).filter { $0 > cursor }.min()
+                ?? sectors.upperBound
+
+            let n = min(goodStep, nextKnownBad - cursor, sectors.upperBound - cursor)
+            if let buffer = try? await device.readSectors(cursor ..< cursor + n, areas: areas) {
+                fill(buffer, at: cursor)
+                cursor += n
+                if goodStep == 1 {
+                    consecutiveGoodSingles += 1
+                    if consecutiveGoodSingles >= 16 { goodStep = 8 }
+                } else {
+                    goodStep = min(goodStep * 2, config.chunkSectors)
+                }
+                continue
+            }
+
+            if n > 1 {
+                // Damage somewhere in the block: single-step to find it
+                // (successes are cheap; only the actual hit is expensive).
+                goodStep = 1
+                consecutiveGoodSingles = 0
+                continue
+            }
+
+            // cursor is confirmed unreadable: cross the run with exponential
+            // zero-blocks, one failing probe per block.
+            let runStart = cursor
+            var zeroBlock = 1
+            while cursor < sectors.upperBound, !Task.isCancelled {
+                let blockEnd = min(cursor + zeroBlock, sectors.upperBound)
+                bad.append(contentsOf: cursor ..< blockEnd)
+                let lastBlock = cursor ..< blockEnd
+                cursor = blockEnd
+                guard cursor < sectors.upperBound else { break }
+
+                if let probe = try? await device.readSectors(cursor ..< cursor + 1, areas: areas) {
+                    fill(probe, at: cursor)
+                    cursor += 1
+                    // The run ended inside the last zero block: recover its
+                    // readable tail so the boundary is sector-exact.
+                    let recovered = await recoverTail(of: lastBlock, areas: areas)
+                    if let recovered {
+                        fill(recovered.buffer, at: recovered.from)
+                        bad.removeAll { $0 >= recovered.from && $0 < lastBlock.upperBound }
+                    }
+                    let runEnd = recovered?.from ?? lastBlock.upperBound
+                    await health.recordBadRun(runStart ..< runEnd)
+                    break
+                }
+                zeroBlock = min(zeroBlock * 2, 32)
+            }
+            if cursor >= sectors.upperBound {
+                // Run reaches the end of this request; it may continue into
+                // the next chunk (which will pay one probe to find out).
+                await health.recordBadRun(runStart ..< sectors.upperBound)
+            }
+            goodStep = 1
+            consecutiveGoodSingles = 0
+        }
+
+        return (out, bad.sorted())
+    }
+
+    /// Binary-searches the readable tail of a zero-filled block: the
+    /// smallest position whose suffix reads cleanly. Costs ≤ log₂(block)
+    /// contacts, only some of which fail.
+    private func recoverTail(
+        of block: Range<Int>, areas: SectorAreas
+    ) async -> (from: Int, buffer: SectorBuffer)? {
+        var low = block.lowerBound
+        var high = block.upperBound
+        while low < high {
+            let mid = (low + high) / 2
+            if (try? await device.readSectors(mid ..< block.upperBound, areas: areas)) != nil {
+                high = mid
+            } else {
+                low = mid + 1
+            }
+        }
+        guard high < block.upperBound,
+              let buffer = try? await device.readSectors(high ..< block.upperBound, areas: areas)
+        else { return nil }
+        return (high, buffer)
     }
 
     // MARK: Chunk reads

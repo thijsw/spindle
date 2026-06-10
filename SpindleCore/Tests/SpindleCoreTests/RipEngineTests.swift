@@ -181,6 +181,38 @@ private func wavData(_ url: URL) -> Data {
         )
     }
 
+    @Test func longDamageRunIsMappedWithBoundedContacts() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // A 150-sector scratch spanning the track-1/track-2 boundary. Naive
+        // per-sector probing would cost one failing read per damaged sector
+        // (1–2 minutes each on real drives); damage-run mapping must cross
+        // it in a logarithmic number of contacts, zero-fill it exactly, and
+        // never touch it again in the second pass.
+        let damage = 90 ..< 240
+        let device = MockCDDevice(leadOut: leadOut, errorSectors: Set(damage))
+        let config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2), chunkSectors: 150)
+        let result = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir)
+
+        let allBad = result.tracks.flatMap(\.unrecoverableSectors).sorted()
+        #expect(allBad == Array(damage), "exactly the damaged run reported, boundaries sector-exact")
+
+        var expected1 = expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 0, leadOut: leadOut)
+        expected1.replaceSubrange(90 * 2352 ..< 150 * 2352, with: Data(count: 60 * 2352))
+        #expect(wavData(result.tracks[0].wavURL) == expected1, "track 1: healthy sectors exact, damage zeroed")
+
+        var expected2 = expectedAudio(trackSectors: 150 ..< 400, sampleOffset: 0, leadOut: leadOut)
+        expected2.replaceSubrange(0 ..< 90 * 2352, with: Data(count: 90 * 2352))
+        #expect(wavData(result.tracks[1].wavURL) == expected2, "track 2: damage zeroed, rest exact")
+
+        // Contact budget: two compare passes over 400 sectors with a
+        // 150-sector run. Naive per-sector mapping would need 150+ failing
+        // contacts; run mapping stays logarithmic.
+        let reads = await device.readCount
+        #expect(reads < 200, "bounded device contacts (got \(reads))")
+    }
+
     @Test func lyingC2IsDetectedAndRetiredMidRip() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -55,6 +55,7 @@ actor MockCDDevice: CDDeviceIO {
     }
 
     func readSectors(_ range: Range<Int>, areas: SectorAreas) throws -> SectorBuffer {
+        readCount += 1 // counts attempts: failing contacts are the expensive ones
         if areas.contains(.errorFlags), !supportsC2 {
             throw DiscDriveError.ioctlFailed(name: "DKIOCCDREAD", code: 22) // EINVAL
         }
@@ -64,7 +65,6 @@ actor MockCDDevice: CDDeviceIO {
         if !errorSectors.isDisjoint(with: range) {
             throw DiscDriveError.ioctlFailed(name: "DKIOCCDREAD", code: 5) // EIO
         }
-        readCount += 1
 
         var data = Data(capacity: range.count * areas.bytesPerSector)
         for lba in range {
