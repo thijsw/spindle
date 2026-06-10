@@ -25,7 +25,10 @@ public struct TrackRipper: Sendable {
         toc: TOC,
         isFirstAudio: Bool,
         isLastAudio: Bool,
+        ctdbLeadingSkip: Int = 0,
+        ctdbTrailingSkip: Int = 0,
         to wavURL: URL,
+        onAudio: (@Sendable (Data) -> Void)? = nil,
         progress: @Sendable @escaping (RipProgress) -> Void
     ) async throws -> RippedTrack {
         let sectors = toc.sectorRange(of: track)
@@ -34,7 +37,9 @@ public struct TrackRipper: Sendable {
         var checksums = ChecksumAccumulator(
             totalSamples: totalSectors * 588,
             isFirstTrack: isFirstAudio,
-            isLastTrack: isLastAudio
+            isLastTrack: isLastAudio,
+            ctdbLeadingSkip: ctdbLeadingSkip,
+            ctdbTrailingSkip: ctdbTrailingSkip
         )
         var rereads = 0
         var unrecoverable: [Int] = []
@@ -57,6 +62,7 @@ public struct TrackRipper: Sendable {
 
             try writer.append(result.audio)
             checksums.update(result.audio)
+            onAudio?(result.audio)
 
             outputSector += chunk
             progress(RipProgress(

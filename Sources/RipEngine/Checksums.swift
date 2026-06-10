@@ -34,6 +34,38 @@ public struct TrackChecksums: Sendable, Hashable, Codable {
     public let crc32: UInt32
     public let accurateRipV1: UInt32
     public let accurateRipV2: UInt32
+    /// CRC32 with CTDB skip semantics (first track: 2940 leading samples
+    /// skipped; last track: 2940 + disc-length remainder trailing samples).
+    public let ctdbCRC32: UInt32
+
+    public init(crc32: UInt32, accurateRipV1: UInt32, accurateRipV2: UInt32, ctdbCRC32: UInt32) {
+        self.crc32 = crc32
+        self.accurateRipV1 = accurateRipV1
+        self.accurateRipV2 = accurateRipV2
+        self.ctdbCRC32 = ctdbCRC32
+    }
+}
+
+/// CRC32 over only the bytes inside `coveredBytes` of a longer stream.
+public struct RangeGatedCRC32: Sendable {
+    private var crc = CRC32()
+    private var position = 0
+    private let coveredBytes: Range<Int>
+
+    public init(coveredBytes: Range<Int>) {
+        self.coveredBytes = coveredBytes
+    }
+
+    public mutating func update(_ data: Data) {
+        let chunk = position ..< position + data.count
+        position = chunk.upperBound
+        let overlap = chunk.clamped(to: coveredBytes)
+        guard !overlap.isEmpty else { return }
+        let lower = data.startIndex + (overlap.lowerBound - chunk.lowerBound)
+        crc.update(data.subdata(in: lower ..< lower + overlap.count))
+    }
+
+    public var value: UInt32 { crc.value }
 }
 
 /// Streaming checksum accumulator for one track's audio (16-bit stereo LE).
@@ -45,6 +77,7 @@ public struct TrackChecksums: Sendable, Hashable, Codable {
 /// differences at the disc edges).
 public struct ChecksumAccumulator: Sendable {
     private var crc = CRC32()
+    private var ctdb: RangeGatedCRC32
     private var arV1: UInt32 = 0
     private var arV2: UInt32 = 0
     private var sampleIndex = 0 // 0-based, in 4-byte sample frames
@@ -52,13 +85,23 @@ public struct ChecksumAccumulator: Sendable {
     private let firstExcludedTrailingSample: Int
     private var pending = Data() // carries partial sample frames between updates
 
-    public init(totalSamples: Int, isFirstTrack: Bool, isLastTrack: Bool) {
+    public init(
+        totalSamples: Int,
+        isFirstTrack: Bool,
+        isLastTrack: Bool,
+        ctdbLeadingSkip: Int = 0,
+        ctdbTrailingSkip: Int = 0
+    ) {
         self.skippedLeadingSamples = isFirstTrack ? 5 * 588 - 1 : 0
         self.firstExcludedTrailingSample = totalSamples - (isLastTrack ? 5 * 588 : 0)
+        self.ctdb = RangeGatedCRC32(
+            coveredBytes: ctdbLeadingSkip * 4 ..< (totalSamples - ctdbTrailingSkip) * 4
+        )
     }
 
     public mutating func update(_ data: Data) {
         crc.update(data)
+        ctdb.update(data)
 
         var buffer: Data
         if pending.isEmpty {
@@ -85,6 +128,6 @@ public struct ChecksumAccumulator: Sendable {
     }
 
     public func finalize() -> TrackChecksums {
-        TrackChecksums(crc32: crc.value, accurateRipV1: arV1, accurateRipV2: arV2)
+        TrackChecksums(crc32: crc.value, accurateRipV1: arV1, accurateRipV2: arV2, ctdbCRC32: ctdb.value)
     }
 }

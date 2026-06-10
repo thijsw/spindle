@@ -3,6 +3,7 @@
 tocParserTests()
 discIDTests()
 metadataTests()
+verificationTests()
 await ripEngineTests()
 await encodingTests()
 Harness.finish()

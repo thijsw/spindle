@@ -4,6 +4,7 @@ import Foundation
 import Metadata
 import Naming
 import RipEngine
+import Verification
 
 // Debug/development CLI. Each milestone adds a subcommand so every subsystem
 // can be exercised headless before the app UI exists.
@@ -346,17 +347,18 @@ case "rip":
     print("Ripping \(toc.audioTracks.count) tracks to \(outDir.path) (\(mode == .burst ? "burst" : "secure"))…")
 
     let printer = ProgressPrinter()
-    let tracks = try await ripper.rip(toc: toc, to: outDir) { progress in
+    let result = try await ripper.ripDisc(toc: toc, to: outDir) { progress in
         printer.print(progress)
     }
     print("")
-    for track in tracks {
+    for track in result.tracks {
         var line = String(
-            format: "track %02d  crc32 %08X  ARv1 %08X  ARv2 %08X",
+            format: "track %02d  crc32 %08X  ARv1 %08X  ARv2 %08X  CTDB %08X",
             track.trackNumber,
             track.checksums.crc32,
             track.checksums.accurateRipV1,
-            track.checksums.accurateRipV2
+            track.checksums.accurateRipV2,
+            track.checksums.ctdbCRC32
         )
         if track.rereads > 0 { line += "  (\(track.rereads) re-reads)" }
         if !track.unrecoverableSectors.isEmpty {
@@ -364,7 +366,35 @@ case "rip":
         }
         print(line)
     }
-    print(String(format: "Done in %.1fs.", -started.timeIntervalSinceNow))
+    print(String(format: "Ripped in %.1fs.", -started.timeIntervalSinceNow))
+
+    if onlyTrack == nil {
+        do {
+            let verifier = CTDBVerifier(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+            let checksums = result.tracks.reduce(into: [Int: TrackChecksums]()) {
+                $0[$1.trackNumber] = $1.checksums
+            }
+            let verification = try await verifier.verify(
+                toc: toc, trackChecksums: checksums, ctdbDiscCRC32: result.ctdbDiscCRC32
+            )
+            print(verification.summary)
+            if let match = verification.discMatch {
+                print("Whole-disc CRC matches CTDB entry \(match.id) (confidence \(match.confidence)).")
+            }
+            for (track, verdict) in verification.trackVerdicts.sorted(by: { $0.key < $1.key }) {
+                switch verdict {
+                case .accuratelyRipped(let confidence):
+                    print(String(format: "  track %02d  ✓ verified (confidence %d)", track, confidence))
+                case .differs(let best):
+                    print(String(format: "  track %02d  ✗ differs from database (best confidence %d) — check drive offset", track, best))
+                case .notInDatabase:
+                    print(String(format: "  track %02d  not in database", track))
+                }
+            }
+        } catch {
+            print("CTDB verification unavailable: \(error)")
+        }
+    }
 
 case "encode":
     let rest = Array(arguments.dropFirst())
