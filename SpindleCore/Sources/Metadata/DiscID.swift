@@ -90,9 +90,11 @@ public struct DiscTOC: Sendable, Hashable {
             }
             return sum
         }
-        let n = trackOffsets.reduce(0) { $0 + digitSum($1) } % 0xFF
-        let totalSeconds = leadOutOffset / 75 - trackOffsets[0] / 75
-        let id = (n << 24) | (totalSeconds << 8) | trackOffsets.count
-        return String(format: "%08x", UInt32(bitPattern: Int32(id)))
+        // Unsigned arithmetic: n can have its high bit set, which would
+        // overflow a signed 32-bit intermediate (found on a real disc).
+        let n = UInt32(trackOffsets.reduce(0) { $0 + digitSum($1) } % 0xFF)
+        let totalSeconds = UInt32(leadOutOffset / 75 - trackOffsets[0] / 75)
+        let id = n << 24 | totalSeconds << 8 | UInt32(trackOffsets.count)
+        return String(format: "%08x", id)
     }
 }

@@ -300,7 +300,7 @@ public actor PipelineCoordinator {
             setStage(job, .ripping)
             let identity = dependencies.driveIdentity(job.bsdName)
             let config = preferences.ripConfiguration(
-                forDrive: identity.map { "\($0.vendor) \($0.product)" }
+                forDrive: identity?.offsetKey
             )
             let ripper = DiscRipper(device: device, config: config)
             let result = try await ripper.ripDisc(toc: toc, to: job.stagingDir) { [weak self] progress in

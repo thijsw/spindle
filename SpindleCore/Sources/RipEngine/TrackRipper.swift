@@ -33,7 +33,7 @@ public struct TrackRipper: Sendable {
     ) async throws -> RippedTrack {
         let sectors = toc.sectorRange(of: track)
         let totalSectors = sectors.count
-        let writer = try WAVWriter(url: wavURL)
+        let writer = try WAVWriter(url: wavURL, expectedDataBytes: totalSectors * 2352)
         var checksums = ChecksumAccumulator(
             totalSamples: totalSectors * 588,
             isFirstTrack: isFirstAudio,

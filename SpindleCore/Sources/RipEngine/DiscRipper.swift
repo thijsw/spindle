@@ -90,9 +90,20 @@ public struct DiscRipper: Sendable {
         let audioSession = audioTracks[0].session
         let audioEnd = toc.sessionLeadOuts[audioSession] ?? toc.leadOutLBA
 
+        // Probe the largest transfer the drive accepts: halve the chunk size
+        // until a read succeeds (some drives/bridges cap request sizes).
+        var tunedConfig = config
+        let probeAreas: SectorAreas = needsC2 ? [.user, .errorFlags] : .user
+        while tunedConfig.chunkSectors > 25 {
+            let start = audioTracks[0].startLBA
+            let range = start ..< min(start + tunedConfig.chunkSectors, audioEnd)
+            if (try? await device.readSectors(range, areas: probeAreas)) != nil { break }
+            tunedConfig.chunkSectors /= 2
+        }
+
         let ripper = TrackRipper(
             device: device,
-            config: config,
+            config: tunedConfig,
             readableSectors: 0 ..< audioEnd,
             useC2: needsC2
         )

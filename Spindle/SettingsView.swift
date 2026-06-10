@@ -372,7 +372,7 @@ struct RippingSettingsPane: View {
               let identity = DiscDrive.DiscEnumerator.driveIdentity(forMediaBSDName: bsd)
         else { return }
         driveName = identity.displayName
-        driveKey = "\(identity.vendor) \(identity.product)"
+        driveKey = identity.offsetKey
         suggestedOffset = DiscDrive.DriveOffsetTable.suggestion(for: identity)?.samples
     }
 }

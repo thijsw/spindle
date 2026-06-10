@@ -13,14 +13,21 @@ public final class WAVWriter {
 
     private static let headerSize = 44
 
-    public init(url: URL) throws {
+    /// When the audio length is known in advance (it always is for a CD
+    /// track), the final header is written immediately so the file is a
+    /// valid, playable WAV even while the rip is still appending to it.
+    public init(url: URL, expectedDataBytes: Int? = nil) throws {
         FileManager.default.createFile(atPath: url.path, contents: nil)
         guard let handle = try? FileHandle(forWritingTo: url) else {
             throw WAVError.cannotCreate(url)
         }
         self.handle = handle
         self.url = url
-        try handle.write(contentsOf: Data(count: Self.headerSize)) // placeholder
+        if let expectedDataBytes {
+            try handle.write(contentsOf: Self.header(dataBytes: UInt32(expectedDataBytes)))
+        } else {
+            try handle.write(contentsOf: Data(count: Self.headerSize)) // placeholder
+        }
     }
 
     public func append(_ audio: Data) throws {
@@ -29,7 +36,13 @@ public final class WAVWriter {
     }
 
     public func finish() throws {
-        var header = Data(capacity: Self.headerSize)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: Self.header(dataBytes: dataBytes))
+        try handle.close()
+    }
+
+    private static func header(dataBytes: UInt32) -> Data {
+        var header = Data(capacity: headerSize)
         func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { header.append(contentsOf: $0) } }
         func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { header.append(contentsOf: $0) } }
 
@@ -46,9 +59,6 @@ public final class WAVWriter {
         u16(16) // bits per sample
         header.append(contentsOf: "data".utf8)
         u32(dataBytes)
-
-        try handle.seek(toOffset: 0)
-        try handle.write(contentsOf: header)
-        try handle.close()
+        return header
     }
 }

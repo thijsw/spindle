@@ -27,6 +27,21 @@ import Testing
         #expect(reference.musicBrainzTOCString == "1 22 303602 150 9700 25887 39297 53795 63735 77517 94877 107270 123552 135522 148422 161197 174790 192022 205545 218010 228700 239590 255470 266932 288750")
     }
 
+    @Test func freeDBIDHandlesHighDigitSumByte() {
+        // Nine tracks whose second-counts each have digit sum 27 → n = 243,
+        // which sets the sign bit of a 32-bit intermediate (regression test
+        // for an Int32 overflow crash found with a real disc).
+        let seconds = [999, 1998, 2997, 3996, 4995, 5994, 6993, 7992, 8991]
+        let disc = DiscTOC(
+            firstTrack: 1,
+            lastTrack: 9,
+            leadOutOffset: 9000 * 75,
+            trackOffsets: seconds.map { $0 * 75 }
+        )
+        // 0xF3 << 24 | (9000-999) << 8 | 9 == f31f4109
+        #expect(disc.freeDBDiscID == "f31f4109")
+    }
+
     @Test func discIDIsAlways28Characters() {
         let tiny = DiscTOC(firstTrack: 1, lastTrack: 1, leadOutOffset: 5000, trackOffsets: [150])
         #expect(tiny.musicBrainzDiscID.count == 28)

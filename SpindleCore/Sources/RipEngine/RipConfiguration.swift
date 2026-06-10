@@ -21,8 +21,8 @@ public struct RipConfiguration: Sendable, Equatable {
     public init(
         mode: Mode = .secureDefault,
         sampleOffset: Int = 0,
-        chunkSectors: Int = 25,
-        speedKBps: UInt16? = nil
+        chunkSectors: Int = 150,
+        speedKBps: UInt16? = 0xFFFF
     ) {
         self.mode = mode
         self.sampleOffset = sampleOffset

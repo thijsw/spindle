@@ -34,22 +34,36 @@ public enum DiscEnumerator {
         var entry = IOServiceGetMatchingService(kIOMainPortDefault, matching)
         guard entry != 0 else { return nil }
 
+        // The media node's registry name reveals the actual mechanism (e.g.
+        // an Apple SuperDrive's media node is "HL-DT-ST DVDRW GX50N Media"),
+        // which matters for read-offset suggestions on rebadged drives.
+        var nameBuffer = [CChar](repeating: 0, count: 128)
+        let mechanism: String? = IORegistryEntryGetName(entry, &nameBuffer) == KERN_SUCCESS
+            ? String(cString: nameBuffer)
+                .replacingOccurrences(of: " Media", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            : nil
+
         // Ascend until we find a Device Characteristics dictionary.
+        // (No defer here: it would release the reassigned parent, not the
+        // entry it was registered for.)
         while entry != 0 {
-            defer { IOObjectRelease(entry) }
             if let characteristics = IORegistryEntryCreateCFProperty(
                 entry, "Device Characteristics" as CFString, kCFAllocatorDefault, 0
             )?.takeRetainedValue() as? [String: Any] {
-                return DriveIdentity(
+                let identity = DriveIdentity(
                     vendor: (characteristics["Vendor Name"] as? String ?? "").trimmingCharacters(in: .whitespaces),
                     product: (characteristics["Product Name"] as? String ?? "").trimmingCharacters(in: .whitespaces),
-                    revision: (characteristics["Product Revision Level"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+                    revision: (characteristics["Product Revision Level"] as? String ?? "").trimmingCharacters(in: .whitespaces),
+                    mechanism: mechanism
                 )
+                IOObjectRelease(entry)
+                return identity
             }
             var parent: io_registry_entry_t = 0
-            guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS else {
-                return nil
-            }
+            let result = IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent)
+            IOObjectRelease(entry)
+            guard result == KERN_SUCCESS else { return nil }
             entry = parent
         }
         return nil

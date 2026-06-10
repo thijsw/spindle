@@ -38,6 +38,9 @@ commands:
     --toc "<str>"   MusicBrainz TOC string for metadata lookup
     --pick <n>      candidate to use when several match (default: best)
 
+  scan-offset <wavdir> [disk]
+                    find the drive's read offset by testing an offset-0 rip
+                    against the CUETools database at many candidate offsets
   push <dir> [options]
                     upload a directory tree to a destination
     --to <dest>     folder path, or sftp://user@host[:port]/remote/path
@@ -524,6 +527,54 @@ case "encode":
     if let art, let albumFolder {
         try art.data.write(to: albumFolder.appendingPathComponent("cover.\(art.fileExtension)"))
         print("  cover.\(art.fileExtension)")
+    }
+
+case "scan-offset":
+    let rest = Array(arguments.dropFirst())
+    guard let wavDir = rest.first, !wavDir.hasPrefix("--") else {
+        fail("scan-offset needs a directory of trackNN.wav files")
+    }
+    let bsd = resolveDisc(rest.dropFirst().first)
+    let drive = try CDDrive(bsdName: bsd)
+    let toc = try TOC.parse(fullTOC: try await drive.readFullTOC())
+
+    let wavURLs = (try? FileManager.default.contentsOfDirectory(
+        at: URL(fileURLWithPath: wavDir), includingPropertiesForKeys: nil
+    ))?.filter { $0.pathExtension == "wav" && $0.lastPathComponent.hasPrefix("track") }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+    guard wavURLs.count == toc.audioTracks.count else {
+        fail("Found \(wavURLs.count) WAVs but the disc has \(toc.audioTracks.count) audio tracks.")
+    }
+
+    print("Querying CTDB…")
+    let ctdbClient = CTDBClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+    let entries = try await ctdbClient.lookup(toc: toc)
+    guard !entries.isEmpty else {
+        fail("Disc not in CTDB — cannot determine the offset from this disc.")
+    }
+    print("\(entries.count) database entries. Scanning \(OffsetScanner.commonOffsets.count) candidate offsets…")
+
+    let scanStarted = Date()
+    let candidates = try OffsetScanner.scan(wavURLs: wavURLs, toc: toc, entries: entries)
+    print(String(format: "Scanned in %.1fs.\n", -scanStarted.timeIntervalSinceNow))
+
+    for candidate in candidates.prefix(5) {
+        print(String(
+            format: "  offset %+5d  %2d/%d tracks match  (confidence %d)%@",
+            candidate.offset,
+            candidate.matchedTracks,
+            candidate.totalTracks,
+            candidate.confidence,
+            candidate.isFullMatch ? "  ← full match" : ""
+        ))
+    }
+    if let best = candidates.first, best.isFullMatch {
+        print("\nDrive read offset: \(best.offset >= 0 ? "+" : "")\(best.offset) samples.")
+        if let identity = DiscEnumerator.driveIdentity(forMediaBSDName: bsd) {
+            print("Set this for \(identity.displayName) in Settings → Ripping.")
+        }
+    } else {
+        print("\nNo offset matches every track — the disc may be damaged or a different pressing.")
     }
 
 case "push":
