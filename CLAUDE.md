@@ -68,6 +68,18 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
   library.
 - Never diagnose drive stalls by theorizing: `sample <pid> 5` while hung
   shows exactly which engine path is blocked in ioctl.
+- UI hang post-mortem (the Settings beach-ball): the root cause was a
+  SwiftUI feedback loop — `MenuBarExtra(isInserted: binding)` drives the
+  binding's setter at display rate, and `@Observable` notifies on EVERY
+  assignment even when unchanged, so writing the same value back re-rendered
+  all preference observers ~42×/s (proven by file-logging the setter: 1104
+  writes/26 s). Fix: guard binding setters that write into @Observable state
+  to assign only on real change. General lesson: SwiftUI GUI hangs are not
+  guessable — `sample` the hung main thread for the view, then file-log
+  (not stdout — GUI stdout isn't captured; not _printChanges — suppressed
+  outside Xcode) the suspected mutation to count it. AppModel split: live
+  rip state (jobs/art) vs SettingsStore (preferences) so Settings never
+  re-renders on rip churn.
 - Damaged media economics: a FAILING read costs the drive's internal retry
   storm (1–2 min on the SuperDrive) and cannot be interrupted from
   userspace. The engine therefore budgets failing contacts (damage-run
