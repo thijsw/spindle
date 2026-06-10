@@ -26,6 +26,7 @@ public struct TrackRipper: Sendable {
     /// Readable sector bounds of the audio area (0 ..< lead-out LBA).
     let readableSectors: Range<Int>
     let useC2: Bool
+    let damage: DamageMap
 
     private static let bytesPerSector = SectorAreas.audioBytesPerSector
     /// Conservative bound on drive read-cache coverage, in sectors
@@ -43,11 +44,18 @@ public struct TrackRipper: Sendable {
     /// reads markedly better at low speed (the XLD/dbpoweramp playbook).
     private static let damagedRegionSpeed: UInt16 = 706
 
-    public init(device: any CDDeviceIO, config: RipConfiguration, readableSectors: Range<Int>, useC2: Bool) {
+    public init(
+        device: any CDDeviceIO,
+        config: RipConfiguration,
+        readableSectors: Range<Int>,
+        useC2: Bool,
+        damage: DamageMap = DamageMap()
+    ) {
         self.device = device
         self.config = config
         self.readableSectors = readableSectors
         self.useC2 = useC2
+        self.damage = damage
     }
 
     /// Thrown when the drive's C2 flag rate is implausible — the track must
@@ -77,21 +85,32 @@ public struct TrackRipper: Sendable {
             return c2SectorsSeen >= 150 && c2SectorsFlagged * 20 > c2SectorsSeen
         }
 
-        // Confirmed-unreadable runs (absolute LBA ranges). Later passes and
-        // settles zero-fill these without touching the device again — a
-        // failing read costs the drive's full internal retry storm.
-        private var badRuns: [Range<Int>] = []
+    }
+
+    /// Confirmed-unreadable runs (absolute LBA ranges), shared across all
+    /// tracks and passes of one disc operation: a failing read costs the
+    /// drive's full internal retry storm, so damage charted once must never
+    /// be probed again — not by the next chunk, not by the second compare
+    /// pass, not by the verify-first secure re-rip.
+    public actor DamageMap {
+        private var runs: [Range<Int>] = []
+
+        public init() {}
 
         func recordBadRun(_ run: Range<Int>) {
             guard !run.isEmpty else { return }
-            badRuns.append(run)
+            runs.append(run)
         }
 
         func knownBadRuns(intersecting range: Range<Int>) -> [Range<Int>] {
-            badRuns.compactMap { run in
+            runs.compactMap { run in
                 let overlap = run.clamped(to: range)
                 return overlap.isEmpty ? nil : overlap
             }.sorted { $0.lowerBound < $1.lowerBound }
+        }
+
+        public var totalBadSectors: Int {
+            runs.reduce(0) { $0 + $1.count }
         }
     }
 
@@ -338,7 +357,7 @@ public struct TrackRipper: Sendable {
     private func resilientRead(
         _ sectors: Range<Int>, areas: SectorAreas, health: RipHealth
     ) async -> (data: Data, unrecoverable: [Int]) {
-        let knownBad = await health.knownBadRuns(intersecting: sectors)
+        let knownBad = await damage.knownBadRuns(intersecting: sectors)
 
         // Fast path: no known damage inside — try the whole range.
         if knownBad.isEmpty {
@@ -434,7 +453,7 @@ public struct TrackRipper: Sendable {
                         bad.removeAll { $0 >= recovered.from && $0 < lastBlock.upperBound }
                     }
                     let runEnd = recovered?.from ?? lastBlock.upperBound
-                    await health.recordBadRun(runStart ..< runEnd)
+                    await damage.recordBadRun(runStart ..< runEnd)
                     break
                 }
                 zeroBlock = min(zeroBlock * 2, 32)
@@ -442,7 +461,7 @@ public struct TrackRipper: Sendable {
             if cursor >= sectors.upperBound {
                 // Run reaches the end of this request; it may continue into
                 // the next chunk (which will pay one probe to find out).
-                await health.recordBadRun(runStart ..< sectors.upperBound)
+                await damage.recordBadRun(runStart ..< sectors.upperBound)
             }
             goodStep = 1
             consecutiveGoodSingles = 0

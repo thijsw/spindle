@@ -32,10 +32,19 @@ final class DiscCRCBox: @unchecked Sendable {
 public struct DiscRipper: Sendable {
     public let device: any CDDeviceIO
     public let config: RipConfiguration
+    /// Shared chart of unreadable runs; pass the same instance to related
+    /// rips (e.g. verify-first burst + secure re-rip) so damage is probed
+    /// exactly once per disc.
+    public let damage: TrackRipper.DamageMap
 
-    public init(device: any CDDeviceIO, config: RipConfiguration) {
+    public init(
+        device: any CDDeviceIO,
+        config: RipConfiguration,
+        damage: TrackRipper.DamageMap = TrackRipper.DamageMap()
+    ) {
         self.device = device
         self.config = config
+        self.damage = damage
     }
 
     /// Probes whether the drive returns *usable* C2 error pointers.
@@ -146,7 +155,8 @@ public struct DiscRipper: Sendable {
                 device: device,
                 config: tunedConfig,
                 readableSectors: 0 ..< audioEnd,
-                useC2: needsC2
+                useC2: needsC2,
+                damage: damage
             )
             let ripped = try await ripper.rip(
                 track: track,

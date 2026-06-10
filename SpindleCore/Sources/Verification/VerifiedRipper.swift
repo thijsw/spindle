@@ -42,11 +42,14 @@ public struct VerifiedRipper: Sendable {
         progress: @Sendable @escaping (RipProgress) -> Void = { _ in }
     ) async throws -> Outcome {
         let secureRequested: Bool = if case .secure = configuration.mode { true } else { false }
+        // One damage chart for the whole operation: scratches mapped during
+        // the burst pass are never re-probed by the secure re-rip.
+        let damage = TrackRipper.DamageMap()
 
         // Without a verifier, a fast first pass proves nothing — go straight
         // to the secure engine instead of ripping everything twice.
         if secureRequested, verifier == nil {
-            let secure = try await DiscRipper(device: device, config: configuration)
+            let secure = try await DiscRipper(device: device, config: configuration, damage: damage)
                 .ripDisc(toc: toc, to: stagingDirectory, progress: progress)
             return Outcome(
                 tracks: secure.tracks,
@@ -61,7 +64,7 @@ public struct VerifiedRipper: Sendable {
         // the slow machinery entirely.
         var burstConfiguration = configuration
         burstConfiguration.mode = .burst
-        let firstPass = try await DiscRipper(device: device, config: burstConfiguration)
+        let firstPass = try await DiscRipper(device: device, config: burstConfiguration, damage: damage)
             .ripDisc(toc: toc, to: stagingDirectory, progress: progress)
 
         var verification = await verify(
@@ -101,7 +104,7 @@ public struct VerifiedRipper: Sendable {
         }
 
         // Pass 2: secure re-rip of only the unconfirmed tracks.
-        let secondPass = try await DiscRipper(device: device, config: configuration)
+        let secondPass = try await DiscRipper(device: device, config: configuration, damage: damage)
             .ripDisc(toc: toc, only: Set(unverified), to: stagingDirectory, progress: progress)
 
         var merged = firstPass.tracks.filter { !unverified.contains($0.trackNumber) }
