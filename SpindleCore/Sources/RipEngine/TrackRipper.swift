@@ -389,13 +389,23 @@ public struct TrackRipper: Sendable {
         return SettledData(audio: best, rereads: rereads, recovered: false)
     }
 
-    /// Forces the drive to evict its read cache by touching a sector on the
-    /// far side of the audio area (cdparanoia-style backseek flush).
+    /// Conservative bound on drive read-cache coverage, in sectors
+    /// (cdparanoia's default cache model: 1200 sectors ≈ 2.8 MB ≈ 16 s).
+    private static let cacheFlushDistance = 1200
+
+    /// Forces the drive to evict its read cache before a verification
+    /// re-read. A *small* backseek — just beyond the modeled cache window —
+    /// flushes a read-ahead cache exactly as well as a cross-disc jump, but
+    /// costs only a few millimeters of head travel (cdparanoia's approach;
+    /// a full-stroke seek per re-read would hammer the mechanism).
     private func bustCache(awayFrom lba: Int) async {
         let area = readableSectors
         guard area.count > 1 else { return }
-        let half = area.count / 2
-        let target = area.lowerBound + ((lba - area.lowerBound) + half) % area.count
+        var target = lba - Self.cacheFlushDistance
+        if target < area.lowerBound {
+            // Too close to the disc start to seek back: jump forward instead.
+            target = min(lba + Self.cacheFlushDistance, area.upperBound - 1)
+        }
         _ = try? await device.readSectors(target ..< target + 1, areas: .user)
     }
 }

@@ -568,13 +568,18 @@ case "scan-offset":
             candidate.isFullMatch ? "  ← full match" : ""
         ))
     }
-    if let best = candidates.first, best.isFullMatch {
-        print("\nDrive read offset: \(best.offset >= 0 ? "+" : "")\(best.offset) samples.")
+    if let best = candidates.first {
+        let failing = best.trackVerdicts
+            .filter { if case .accuratelyRipped = $0.value { false } else { true } }
+            .keys.sorted()
+        if best.isFullMatch {
+            print("\nDrive read offset: \(best.offset >= 0 ? "+" : "")\(best.offset) samples.")
+        } else {
+            print("\nBest candidate \(best.offset >= 0 ? "+" : "")\(best.offset): tracks \(failing.map(String.init).joined(separator: ", ")) don't match any entry — damage, or a pressing difference at the disc edges.")
+        }
         if let identity = DiscEnumerator.driveIdentity(forMediaBSDName: bsd) {
             print("Set this for \(identity.displayName) in Settings → Ripping.")
         }
-    } else {
-        print("\nNo offset matches every track — the disc may be damaged or a different pressing.")
     }
 
 case "bench":
