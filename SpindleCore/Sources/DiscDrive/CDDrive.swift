@@ -5,7 +5,7 @@ import Foundation
 /// the IOCDMedia BSD client ioctls. Actor isolation serializes device access.
 public actor CDDrive: CDDeviceIO {
     public let bsdName: String
-    private let fd: Int32
+    private var fd: Int32
 
     public init(bsdName: String) throws {
         let path = "/dev/r\(bsdName)"
@@ -18,7 +18,16 @@ public actor CDDrive: CDDeviceIO {
     }
 
     deinit {
-        close(fd)
+        if fd >= 0 { Darwin.close(fd) }
+    }
+
+    /// Releases the raw device handle. Must be called before ejecting — an
+    /// open `/dev/rdiskN` makes the device busy and `DADiskEject` fails.
+    public func close() {
+        if fd >= 0 {
+            Darwin.close(fd)
+            fd = -1
+        }
     }
 
     /// Set SPINDLE_TRACE_IO=1 to log every device read slower than 500 ms.

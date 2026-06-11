@@ -341,6 +341,10 @@ public actor PipelineCoordinator {
             }
             setStage(job, .ripped)
 
+            // Close the raw device before ejecting — an open /dev/rdiskN
+            // keeps the disc busy and DADiskEject fails silently.
+            await device.close()
+
             if preferences.ejectTiming == .afterRip {
                 try? await dependencies.drive.eject(bsdName: job.bsdName)
                 eventContinuation?.yield(.notify(

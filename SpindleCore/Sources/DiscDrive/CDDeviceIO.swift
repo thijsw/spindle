@@ -22,6 +22,13 @@ public protocol CDDeviceIO: Actor {
 
     /// Requests a read speed in KB/s (0xFFFF = maximum). Drives may ignore it.
     func setSpeed(_ kbps: UInt16) throws
+
+    /// Releases the underlying device handle so the disc can be ejected.
+    func close()
+}
+
+public extension CDDeviceIO {
+    func close() {} // mocks have nothing to release
 }
 
 public enum DiscDriveError: Error, CustomStringConvertible, Sendable {
