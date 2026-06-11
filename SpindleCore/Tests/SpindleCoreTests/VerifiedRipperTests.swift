@@ -65,7 +65,7 @@ private struct StaticCTDBVerifier: RipVerifier {
         let outcome = try await ripper.rip(toc: toc, to: dir)
 
         #expect(outcome.reRippedTracks.isEmpty, "no secure re-rips needed")
-        #expect(outcome.strategy.contains("fast pass"), "early exit reported")
+        #expect(outcome.strategy.contains("verified"), "verification reported")
         let verdicts = outcome.verification?.trackVerdicts
         #expect(verdicts?[1] == .accuratelyRipped(confidence: 42))
         #expect(verdicts?[2] == .accuratelyRipped(confidence: 42))
@@ -102,24 +102,46 @@ private struct StaticCTDBVerifier: RipVerifier {
         #expect(wav == expected, "re-ripped track is byte-exact")
     }
 
-    @Test func unknownDiscFallsBackToFullSecureRip() async throws {
+    @Test func unknownDiscWithCleanReadIsAcceptedWithoutReRip() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
+        // Disc not in CTDB (or a different master): a clean burst read is
+        // trusted — re-reading identical clean sectors would change nothing,
+        // so no track is re-ripped. (This is the Enhanced-CD case.)
         let device = MockCDDevice(leadOut: leadOut)
         let ripper = VerifiedRipper(
             device: device,
             configuration: RipConfiguration(mode: .secureDefault),
-            verifier: StaticCTDBVerifier(entries: []) // disc not in the database
+            verifier: StaticCTDBVerifier(entries: [])
         )
         let outcome = try await ripper.rip(toc: toc, to: dir)
 
-        #expect(outcome.reRippedTracks == [1, 2], "all tracks re-ripped securely")
-        #expect(outcome.strategy.contains("not in CTDB"), "fallback reported")
-        // Audio still byte-exact.
+        #expect(outcome.reRippedTracks.isEmpty, "clean unknown disc not re-ripped")
+        #expect(outcome.strategy.contains("read clean"), "trust-clean-read reported")
         let wav = try Data(contentsOf: dir.appendingPathComponent("track01.wav")).dropFirst(44)
         let expected = Data((0 ..< 150 * 2352).map { MockCDDevice.canonicalByte(at: $0) })
         #expect(wav == expected)
+    }
+
+    @Test func unknownDiscReRipsOnlyTracksWithReadErrors() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Disc not in CTDB, but sector 200 (track 2) is unreadable (EIO):
+        // a clean read can't be assumed there, so only track 2 is re-ripped.
+        let device = MockCDDevice(leadOut: leadOut, errorSectors: [200])
+        let ripper = VerifiedRipper(
+            device: device,
+            configuration: RipConfiguration(mode: .secureDefault),
+            verifier: StaticCTDBVerifier(entries: [])
+        )
+        let outcome = try await ripper.rip(toc: toc, to: dir)
+
+        #expect(outcome.reRippedTracks == [2], "only the read-error track is re-ripped")
+        // Track 1 (clean) is the untouched burst read.
+        let wav1 = try Data(contentsOf: dir.appendingPathComponent("track01.wav")).dropFirst(44)
+        #expect(wav1 == Data((0 ..< 150 * 2352).map { MockCDDevice.canonicalByte(at: $0) }))
     }
 
     @Test func fastModeVerifiesButNeverReRips() async throws {
