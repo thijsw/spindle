@@ -30,12 +30,31 @@ public struct CRC32: Sendable {
     }
 }
 
+/// The CTDB checksum window, calibrated against the live database (confidence
+/// ~2600; verified 13/13 on real hardware). The first audio track skips one
+/// full stride at the disc start; the last track stops one stride plus the
+/// disc-length remainder before the lead-out. These are the numbers CLAUDE.md
+/// warns must not be re-derived — the rip engine and the offset scanner both
+/// read them from here so the two can never silently drift apart.
+public enum CTDBWindow {
+    /// CUETools' fixed CTDB stride, in samples.
+    public static let stride = 5880
+    /// Samples skipped at the very start of the disc (first audio track).
+    public static var prefix: Int { stride }
+    /// Samples excluded before the lead-out (last audio track), given the
+    /// disc's total audio length in samples.
+    public static func suffix(totalSamples: Int) -> Int {
+        stride + totalSamples % stride
+    }
+}
+
 public struct TrackChecksums: Sendable, Hashable, Codable {
     public let crc32: UInt32
     public let accurateRipV1: UInt32
     public let accurateRipV2: UInt32
-    /// CRC32 with CTDB skip semantics (first track: 2940 leading samples
-    /// skipped; last track: 2940 + disc-length remainder trailing samples).
+    /// CRC32 with CTDB skip semantics: the first/last track exclude the
+    /// `CTDBWindow` edge samples so the checksum tolerates disc-edge offset
+    /// differences (see `CTDBWindow` for the calibrated stride/remainder).
     public let ctdbCRC32: UInt32
 
     public init(crc32: UInt32, accurateRipV1: UInt32, accurateRipV2: UInt32, ctdbCRC32: UInt32) {

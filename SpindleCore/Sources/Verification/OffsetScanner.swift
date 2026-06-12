@@ -57,8 +57,8 @@ public enum OffsetScanner {
         let firstSample = audioTracks[0].startLBA * 588
         let audioEnd = toc.sessionLeadOuts[audioTracks[0].session] ?? toc.leadOutLBA
         let totalSamples = audioEnd * 588
-        let prefix = 5880
-        let suffix = 5880 + totalSamples % 5880
+        let prefix = CTDBWindow.prefix
+        let suffix = CTDBWindow.suffix(totalSamples: totalSamples)
 
         // Absolute sample windows of each track's CTDB checksum at offset 0.
         var windows: [(track: Int, range: Range<Int>)] = []
