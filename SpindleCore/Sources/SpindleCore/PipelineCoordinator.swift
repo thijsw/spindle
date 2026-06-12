@@ -521,8 +521,21 @@ public actor PipelineCoordinator {
 
             let destination = dependencies.destinationFactory(destinationConfig)
             try await destination.prepare()
+
+            // Overall upload progress across all files, weighted by byte size.
+            let totalBytes = uploads.reduce(Int64(0)) { $0 + Self.fileSize($1.0) }
+            var bytesDone: Int64 = 0
+            let id = job.id
+            emitTransferProgress(id, totalBytes > 0 ? 0 : 1)
+
             for (url, relative) in uploads {
-                try await destination.upload(file: url, toRelativePath: relative, progress: nil)
+                let baseDone = bytesDone
+                try await destination.upload(file: url, toRelativePath: relative) { [weak self] progress in
+                    guard let self, totalBytes > 0 else { return }
+                    Task { await self.emitTransferProgress(id, Double(baseDone + progress.bytesSent) / Double(totalBytes)) }
+                }
+                bytesDone += Self.fileSize(url)
+                emitTransferProgress(id, totalBytes > 0 ? Double(bytesDone) / Double(totalBytes) : 1)
                 if let number = trackNumber(fromRelativePath: relative, album: album) {
                     updateTrack(job, number: number, status: .transferred)
                 }
@@ -550,6 +563,14 @@ public actor PipelineCoordinator {
     /// identical for single-session discs ripped in order.
     private func trackPosition(of ripped: RippedTrack, in job: Job) -> Int {
         ripped.trackNumber
+    }
+
+    private func emitTransferProgress(_ id: JobID, _ fraction: Double) {
+        eventContinuation?.yield(.transferProgress(id, fraction: min(1, max(0, fraction))))
+    }
+
+    private static func fileSize(_ url: URL) -> Int64 {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64).flatMap { $0 } ?? 0
     }
 
     private func trackNumber(fromRelativePath relative: String, album: ResolvedAlbum) -> Int? {

@@ -67,7 +67,7 @@ final class AppModel {
         jobs.last { !$0.stage.isTerminal }
     }
 
-    /// Jobs still working in the background plus recent history chips.
+    /// Jobs still working off the rip lane (encoding/transferring).
     var backgroundJobs: [JobSnapshot] {
         jobs.filter { !$0.stage.isTerminal && $0.id != activeJob?.id }
     }
@@ -75,6 +75,43 @@ final class AppModel {
     var pickerJob: JobSnapshot? {
         pickerJobID.flatMap { id in jobs.first { $0.id == id } }
     }
+
+    /// Live upload fraction per job (0...1), for the status bar.
+    private(set) var transferFraction: [JobID: Double] = [:]
+
+    /// One-line description of what the app is doing right now, for the
+    /// status bar. Prefers the most downstream activity (uploading), so the
+    /// user sees the step that's actually taking time.
+    var statusText: String {
+        let active = jobs.filter { !$0.stage.isTerminal }
+        guard !active.isEmpty else {
+            return settings.preferences.destination == nil
+                ? "No destination set — open Settings"
+                : "Ready — insert a disc"
+        }
+        func title(_ job: JobSnapshot) -> String { job.album?.album ?? "Audio CD" }
+
+        if let job = active.first(where: { $0.stage == .transferring }) {
+            let pct = Int((transferFraction[job.id] ?? 0) * 100)
+            return "Uploading \(title(job)) — \(pct)%"
+        }
+        if let job = active.first(where: { $0.stage == .encoding }) {
+            return "Encoding \(title(job))"
+        }
+        if let job = activeJob {
+            return "\(job.stage.label) — \(title(job))"
+        }
+        return active[0].stage.label
+    }
+
+    /// Upload fraction to show as a determinate bar, or nil to show a spinner.
+    var statusProgress: Double? {
+        guard let job = jobs.first(where: { $0.stage == .transferring }) else { return nil }
+        return transferFraction[job.id]
+    }
+
+    /// Whether to show activity (spinner / bar) in the status area.
+    var isBusy: Bool { hasActiveJobs }
 
     func start() {
         guard coordinator == nil else { return }
@@ -113,6 +150,8 @@ final class AppModel {
             }
             if snapshot.stage.isTerminal {
                 if pickerJobID == snapshot.id { pickerJobID = nil }
+                transferFraction[snapshot.id] = nil
+                coverArt[snapshot.id] = nil
                 Task { await self.refreshHistory() }
             }
             refreshMenuBarSummary()
@@ -129,6 +168,9 @@ final class AppModel {
 
         case .notify(let title, let body):
             postNotification(title: title, body: body)
+
+        case .transferProgress(let jobID, let fraction):
+            transferFraction[jobID] = fraction
 
         case .artLoaded(let jobID, let data):
             // Decode AND downscale once, off the main thread. The original is

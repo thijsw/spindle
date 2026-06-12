@@ -19,11 +19,8 @@ struct MainView: View {
                 IdleView()
             }
 
-            if !model.backgroundJobs.isEmpty || !model.history.isEmpty {
-                Divider()
-                QueueStrip()
-                    .frame(height: 76)
-            }
+            Divider()
+            StatusBar()
         }
         .sheet(item: $model.pickerJobID) { _ in
             ReleasePickerSheet()
@@ -256,60 +253,40 @@ struct TrackRow: View {
     }
 }
 
-struct QueueStrip: View {
+/// A thin bar along the bottom edge showing what the app is doing, with an
+/// inline upload-progress bar during transfers.
+struct StatusBar: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(model.backgroundJobs) { job in
-                    QueueChip(
-                        title: job.displayTitle,
-                        subtitle: job.stage.label,
-                        systemImage: "gearshape.arrow.triangle.2.circlepath",
-                        tint: .blue
-                    )
-                }
-                ForEach(model.history.prefix(12)) { record in
-                    QueueChip(
-                        title: "\(record.artist) — \(record.album)",
-                        subtitle: record.succeeded ? (record.detail ?? "Done") : (record.detail ?? "Failed"),
-                        systemImage: record.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill",
-                        tint: record.succeeded ? .green : .red
-                    )
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-        }
-        .background(.background.secondary)
-    }
-}
-
-struct QueueChip: View {
-    let title: String
-    let subtitle: String
-    let systemImage: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.caption2)
+        HStack(spacing: 10) {
+            if model.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.8)
+            } else {
+                Image(systemName: model.startupError == nil ? "checkmark.circle" : "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            }
+
+            Text(model.statusText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 12)
+
+            if let fraction = model.statusProgress {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .frame(width: 160)
+                    .transition(.opacity)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-        .frame(maxWidth: 260)
+        .padding(.horizontal, 14)
+        .frame(height: 28)
+        .background(.background.secondary)
+        .animation(.easeInOut(duration: 0.25), value: model.statusProgress != nil)
     }
 }
 
