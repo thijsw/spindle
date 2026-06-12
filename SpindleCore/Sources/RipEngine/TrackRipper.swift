@@ -203,9 +203,15 @@ public struct TrackRipper: Sendable {
         let onAudio: (@Sendable (Data) -> Void)?
         let progress: @Sendable (RipProgress) -> Void
 
+        /// Corrected byte window of a run of output sectors.
+        func window(ofOutputSectors sectors: Range<Int>) -> Range<Int> {
+            (trackByteStart + sectors.lowerBound * 2352)
+                ..< (trackByteStart + sectors.upperBound * 2352)
+        }
+
         /// Corrected byte window of one output sector.
         func window(ofOutputSector index: Int) -> Range<Int> {
-            (trackByteStart + index * 2352) ..< (trackByteStart + (index + 1) * 2352)
+            window(ofOutputSectors: index ..< index + 1)
         }
     }
 
@@ -223,8 +229,7 @@ public struct TrackRipper: Sendable {
             try Task.checkCancellation()
             try await health.checkDeadline()
             let chunk = min(config.chunkSectors, totalSectors - outputSector)
-            let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
-                ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
+            let byteRange = context.window(ofOutputSectors: outputSector ..< outputSector + chunk)
 
             let result = try await readChunk(for: byteRange, health: health, withC2: useC2)
             rereads += result.rereads
@@ -278,8 +283,7 @@ public struct TrackRipper: Sendable {
             try Task.checkCancellation()
             try await health.checkDeadline()
             let chunk = min(config.chunkSectors, totalSectors - outputSector)
-            let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
-                ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
+            let byteRange = context.window(ofOutputSectors: outputSector ..< outputSector + chunk)
             let result = try await readChunk(for: byteRange, health: health, withC2: false)
             unrecoverable.append(contentsOf: result.unrecoverableSectors)
             try writer.append(result.audio)
@@ -313,8 +317,7 @@ public struct TrackRipper: Sendable {
             try Task.checkCancellation()
             try await health.checkDeadline()
             let chunk = min(config.chunkSectors, totalSectors - outputSector)
-            let byteRange = (context.trackByteStart + outputSector * Self.bytesPerSector)
-                ..< (context.trackByteStart + (outputSector + chunk) * Self.bytesPerSector)
+            let byteRange = context.window(ofOutputSectors: outputSector ..< outputSector + chunk)
             let result = try await readChunk(for: byteRange, health: health, withC2: false)
 
             for s in 0 ..< chunk {

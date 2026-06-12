@@ -54,50 +54,6 @@ commands:
 [disk] is a BSD name like disk4; defaults to the first CD medium found.
 """
 
-func fail(_ message: String) -> Never {
-    FileHandle.standardError.write(Data((message + "\n").utf8))
-    exit(1)
-}
-
-func resolveDisc(_ argument: String?) -> String {
-    if let argument { return argument }
-    guard let first = DiscEnumerator.presentCDMedia().first else {
-        fail("No CD medium present. Insert a disc or pass a BSD name.")
-    }
-    return first
-}
-
-func loadTOC(bsdName: String) async throws -> TOC {
-    let drive = try CDDrive(bsdName: bsdName)
-    let raw = try await drive.readFullTOC()
-    return try TOC.parse(fullTOC: raw)
-}
-
-/// Serializes one-line progress output from the rip callback.
-final class ProgressPrinter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lastLine = ""
-
-    func print(_ progress: RipProgress) {
-        lock.lock()
-        defer { lock.unlock() }
-        let line = String(
-            format: "\rtrack %02d  %3d%%%@",
-            progress.trackNumber,
-            Int(progress.fraction * 100),
-            progress.rereads > 0 ? "  (\(progress.rereads) re-reads)" : ""
-        )
-        guard line != lastLine else { return }
-        lastLine = line
-        FileHandle.standardOutput.write(Data(line.utf8))
-    }
-}
-
-func formatMSF(_ sectors: Int) -> String {
-    let s = sectors + 150
-    return String(format: "%02d:%02d.%02d", s / (60 * 75), (s / 75) % 60, s % 75)
-}
-
 let arguments = CommandLine.arguments.dropFirst()
 guard let command = arguments.first else {
     print(usage)
@@ -165,54 +121,27 @@ case "discid":
     print("Lookup URL:         https://musicbrainz.org/ws/2/discid/\(discTOC.musicBrainzDiscID)?fmt=json")
 
 case "identify":
-    let rest = Array(arguments.dropFirst())
+    var scanner = ArgumentScanner(arguments.dropFirst())
     var disk: String?
     var pick: Int?
     var artPath: String?
     var tocString: String?
 
-    var i = 0
-    while i < rest.count {
-        switch rest[i] {
-        case "--pick":
-            i += 1
-            guard i < rest.count, let n = Int(rest[i]) else { fail("--pick needs a number") }
-            pick = n
-        case "--art":
-            i += 1
-            guard i < rest.count else { fail("--art needs a file path") }
-            artPath = rest[i]
-        case "--toc":
-            i += 1
-            guard i < rest.count else { fail("--toc needs a TOC string") }
-            tocString = rest[i]
-        default:
-            if disk == nil, !rest[i].hasPrefix("--") {
-                disk = rest[i]
-            } else {
-                fail("Unknown option: \(rest[i])")
-            }
+    while let argument = scanner.next() {
+        switch argument {
+        case "--pick": pick = scanner.intValue(after: "--pick")
+        case "--art": artPath = scanner.value(after: "--art")
+        case "--toc": tocString = scanner.value(after: "--toc")
+        default: disk = scanner.positional(argument, replacing: disk)
         }
-        i += 1
     }
 
     let discTOC: DiscTOC
     let audioTrackCount: Int
 
     if let tocString {
-        let numbers = tocString.split(separator: " ").compactMap { Int($0) }
-        guard numbers.count >= 4 else { fail("TOC string needs: first last leadout offsets…") }
-        let parsed = DiscTOC(
-            firstTrack: numbers[0],
-            lastTrack: numbers[1],
-            leadOutOffset: numbers[2],
-            trackOffsets: Array(numbers.dropFirst(3))
-        )
-        guard parsed.trackOffsets.count == parsed.lastTrack - parsed.firstTrack + 1 else {
-            fail("TOC string has \(parsed.trackOffsets.count) offsets for tracks \(parsed.firstTrack)–\(parsed.lastTrack)")
-        }
-        discTOC = parsed
-        audioTrackCount = parsed.trackOffsets.count
+        discTOC = parseDiscTOC(tocString)
+        audioTrackCount = discTOC.trackOffsets.count
     } else {
         let bsd = resolveDisc(disk)
         let drive = try CDDrive(bsdName: bsd)
@@ -228,7 +157,7 @@ case "identify":
     }
 
     print("DiscID \(discTOC.musicBrainzDiscID) — querying MusicBrainz…")
-    let client = MusicBrainzClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+    let client = MusicBrainzClient(userAgent: cliUserAgent)
     let result = try await client.lookup(disc: discTOC)
 
     let releases: [MBRelease]
@@ -278,7 +207,7 @@ case "identify":
         }
 
         if let artPath {
-            let artClient = CoverArtClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+            let artClient = CoverArtClient(userAgent: cliUserAgent)
             if let art = await artClient.fetchArt(
                 releaseMBID: album.releaseMBID,
                 releaseGroupMBID: album.releaseGroupMBID,
@@ -293,7 +222,7 @@ case "identify":
     }
 
 case "rip":
-    let rest = Array(arguments.dropFirst())
+    var scanner = ArgumentScanner(arguments.dropFirst())
     var outDir = URL(fileURLWithPath: "rip")
     var mode = RipConfiguration.Mode.secureDefault
     var offset = 0
@@ -302,37 +231,16 @@ case "rip":
     var allowC2 = true
     var giveUpSeconds = 300
 
-    var i = 0
-    while i < rest.count {
-        switch rest[i] {
-        case "--out":
-            i += 1
-            guard i < rest.count else { fail("--out needs a value") }
-            outDir = URL(fileURLWithPath: rest[i])
-        case "--fast":
-            mode = .burst
-        case "--no-c2":
-            allowC2 = false
-        case "--give-up":
-            i += 1
-            guard i < rest.count, let s = Int(rest[i]) else { fail("--give-up needs seconds") }
-            giveUpSeconds = s
-        case "--offset":
-            i += 1
-            guard i < rest.count, let n = Int(rest[i]) else { fail("--offset needs a number") }
-            offset = n
-        case "--track":
-            i += 1
-            guard i < rest.count, let n = Int(rest[i]) else { fail("--track needs a number") }
-            onlyTrack = n
-        default:
-            if disk == nil, !rest[i].hasPrefix("--") {
-                disk = rest[i]
-            } else {
-                fail("Unknown option: \(rest[i])")
-            }
+    while let argument = scanner.next() {
+        switch argument {
+        case "--out": outDir = URL(fileURLWithPath: scanner.value(after: "--out"))
+        case "--fast": mode = .burst
+        case "--no-c2": allowC2 = false
+        case "--give-up": giveUpSeconds = scanner.intValue(after: "--give-up")
+        case "--offset": offset = scanner.intValue(after: "--offset")
+        case "--track": onlyTrack = scanner.intValue(after: "--track")
+        default: disk = scanner.positional(argument, replacing: disk)
         }
-        i += 1
     }
 
     let bsd = resolveDisc(disk)
@@ -378,7 +286,7 @@ case "rip":
     // The CTDB TOC must describe the whole disc, so single-track rips skip
     // database verification.
     let verifier: CTDBVerifier? = onlyTrack == nil
-        ? CTDBVerifier(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+        ? CTDBVerifier(userAgent: cliUserAgent)
         : nil
 
     let printer = ProgressPrinter()
@@ -430,66 +338,42 @@ case "rip":
     }
 
 case "encode":
-    let rest = Array(arguments.dropFirst())
+    var scanner = ArgumentScanner(arguments.dropFirst())
     var wavDir: String?
     var outDir = URL(fileURLWithPath: "library")
     var formats: [AudioFormat] = [.flac]
     var tocString: String?
     var pick: Int?
 
-    var i = 0
-    while i < rest.count {
-        switch rest[i] {
+    while let argument = scanner.next() {
+        switch argument {
         case "--out":
-            i += 1
-            guard i < rest.count else { fail("--out needs a value") }
-            outDir = URL(fileURLWithPath: rest[i])
+            outDir = URL(fileURLWithPath: scanner.value(after: "--out"))
         case "--format":
-            i += 1
-            guard i < rest.count else { fail("--format needs flac|alac|both") }
-            switch rest[i] {
+            switch scanner.value(after: "--format") {
             case "flac": formats = [.flac]
             case "alac": formats = [.alac]
             case "both": formats = [.flac, .alac]
             default: fail("--format must be flac, alac, or both")
             }
         case "--toc":
-            i += 1
-            guard i < rest.count else { fail("--toc needs a TOC string") }
-            tocString = rest[i]
+            tocString = scanner.value(after: "--toc")
         case "--pick":
-            i += 1
-            guard i < rest.count, let n = Int(rest[i]) else { fail("--pick needs a number") }
-            pick = n
+            pick = scanner.intValue(after: "--pick")
         default:
-            if wavDir == nil, !rest[i].hasPrefix("--") {
-                wavDir = rest[i]
-            } else {
-                fail("Unknown option: \(rest[i])")
-            }
+            wavDir = scanner.positional(argument, replacing: wavDir)
         }
-        i += 1
     }
 
     guard let wavDir else { fail("encode needs a directory of trackNN.wav files") }
-    let wavURLs = (try? FileManager.default.contentsOfDirectory(
-        at: URL(fileURLWithPath: wavDir), includingPropertiesForKeys: nil
-    ))?.filter { $0.pathExtension == "wav" && $0.lastPathComponent.hasPrefix("track") }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+    let wavURLs = wavFiles(in: wavDir)
     guard !wavURLs.isEmpty else { fail("No trackNN.wav files in \(wavDir)") }
 
     var album: ResolvedAlbum
     var art: CoverArt?
     if let tocString {
-        let numbers = tocString.split(separator: " ").compactMap { Int($0) }
-        guard numbers.count >= 4 else { fail("TOC string needs: first last leadout offsets…") }
-        let discTOC = DiscTOC(
-            firstTrack: numbers[0],
-            lastTrack: numbers[1],
-            leadOutOffset: numbers[2],
-            trackOffsets: Array(numbers.dropFirst(3))
-        )
-        let client = MusicBrainzClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+        let discTOC = parseDiscTOC(tocString)
+        let client = MusicBrainzClient(userAgent: cliUserAgent)
         let result = try await client.lookup(disc: discTOC)
         let releases: [MBRelease]
         switch result {
@@ -511,7 +395,7 @@ case "encode":
         ) {
             album = resolved
             print("Tagging as: \(album.albumArtist) — \(album.album)")
-            let artClient = CoverArtClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+            let artClient = CoverArtClient(userAgent: cliUserAgent)
             art = await artClient.fetchArt(
                 releaseMBID: album.releaseMBID,
                 releaseGroupMBID: album.releaseGroupMBID,
@@ -560,16 +444,13 @@ case "scan-offset":
     let drive = try CDDrive(bsdName: bsd)
     let toc = try TOC.parse(fullTOC: try await drive.readFullTOC())
 
-    let wavURLs = (try? FileManager.default.contentsOfDirectory(
-        at: URL(fileURLWithPath: wavDir), includingPropertiesForKeys: nil
-    ))?.filter { $0.pathExtension == "wav" && $0.lastPathComponent.hasPrefix("track") }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+    let wavURLs = wavFiles(in: wavDir)
     guard wavURLs.count == toc.audioTracks.count else {
         fail("Found \(wavURLs.count) WAVs but the disc has \(toc.audioTracks.count) audio tracks.")
     }
 
     print("Querying CTDB…")
-    let ctdbClient = CTDBClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+    let ctdbClient = CTDBClient(userAgent: cliUserAgent)
     let entries = try await ctdbClient.lookup(toc: toc)
     guard !entries.isEmpty else {
         fail("Disc not in CTDB — cannot determine the offset from this disc.")
@@ -616,11 +497,7 @@ case "bench":
     func bench(_ label: String, _ body: () async throws -> Void) async rethrows {
         let t0 = ContinuousClock.now
         try await body()
-        let dt = Double((ContinuousClock.now - t0).components.attoseconds) / 1e18
-            + Double((ContinuousClock.now - t0).components.seconds) * 0 // avoid drift; use duration directly below
-        _ = dt
-        let elapsed = ContinuousClock.now - t0
-        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let seconds = (ContinuousClock.now - t0).seconds
         let kbs = Double(total) * 2352 / seconds / 1000
         print(String(format: "%@: %6.1f KB/s (%.1fx)", label, kbs, kbs / 176.4))
     }
@@ -706,8 +583,7 @@ case "bench-sustained":
         lba += chunk
         windowSectors += chunk
         if windowSectors >= 1500 {
-            let elapsed = ContinuousClock.now - windowStart
-            let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            let seconds = (ContinuousClock.now - windowStart).seconds
             let kbs = Double(windowSectors) * 2352 / seconds / 1000
             print(String(format: "  lba %6d  %6.1f KB/s (%.1fx)", lba, kbs, kbs / 176.4))
             windowStart = ContinuousClock.now
@@ -729,12 +605,10 @@ case "calibrate-skips":
     let toc = try TOC.parse(fullTOC: try await drive.readFullTOC())
     let audio = toc.audioTracks
 
-    let wavURLs = (try? FileManager.default.contentsOfDirectory(
-        at: URL(fileURLWithPath: wavDir), includingPropertiesForKeys: nil
-    ))?.filter { $0.pathExtension == "wav" }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+    let wavURLs = wavFiles(in: wavDir, prefix: "")
     guard wavURLs.count == audio.count else { fail("WAV count mismatch") }
 
-    let ctdb = CTDBClient(userAgent: "Spindle/0.1 ( thijs@wijnmaalen.name )")
+    let ctdb = CTDBClient(userAgent: cliUserAgent)
     let entries = try await ctdb.lookup(toc: toc)
     print("\(entries.count) CTDB entries.")
 
@@ -759,11 +633,9 @@ case "calibrate-skips":
 
     print("Scanning suffix candidates for track \(audio.count)…")
     for suffix in stride(from: 0, through: 11760, by: 294) {
-        let startByte = (lastStart * 588 + knownOffset - lastStart * 588) * 4 // 0 within last WAV, shifted below
         let windowStart = knownOffset * 4
         let windowEnd = (totalSamples - suffix + knownOffset - lastStart * 588) * 4
         guard windowStart >= 0, windowEnd <= lastWAV.count, windowEnd > windowStart else { continue }
-        _ = startByte
         let crc = CRC32.checksum(lastWAV.subdata(
             in: lastWAV.startIndex + windowStart ..< lastWAV.startIndex + windowEnd
         ))
@@ -774,33 +646,19 @@ case "calibrate-skips":
     print("Done. (Step 294 = quarter sector; rerun with finer steps around hits if needed.)")
 
 case "push":
-    let rest = Array(arguments.dropFirst())
+    var scanner = ArgumentScanner(arguments.dropFirst())
     var sourceDir: String?
     var destSpec: String?
     var keyFile: String?
     var savePassword = false
 
-    var i = 0
-    while i < rest.count {
-        switch rest[i] {
-        case "--to":
-            i += 1
-            guard i < rest.count else { fail("--to needs a destination") }
-            destSpec = rest[i]
-        case "--key":
-            i += 1
-            guard i < rest.count else { fail("--key needs a file path") }
-            keyFile = rest[i]
-        case "--save-password":
-            savePassword = true
-        default:
-            if sourceDir == nil, !rest[i].hasPrefix("--") {
-                sourceDir = rest[i]
-            } else {
-                fail("Unknown option: \(rest[i])")
-            }
+    while let argument = scanner.next() {
+        switch argument {
+        case "--to": destSpec = scanner.value(after: "--to")
+        case "--key": keyFile = scanner.value(after: "--key")
+        case "--save-password": savePassword = true
+        default: sourceDir = scanner.positional(argument, replacing: sourceDir)
         }
-        i += 1
     }
 
     guard let sourceDir, let destSpec else { fail("push needs <dir> and --to <dest>") }

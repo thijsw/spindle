@@ -161,26 +161,21 @@ public actor PipelineCoordinator {
               let ranked = job.rankedReleases.first(where: { $0.release.id == candidateID }),
               let toc = job.toc
         else { return }
-        let album = ResolvedAlbum(
+        if let album = ResolvedAlbum(
             release: ranked.release,
             discID: job.discTOC?.musicBrainzDiscID,
             audioTrackCount: toc.audioTracks.count
-        ) ?? ResolvedAlbum.fallback(
-            cdText: job.cdText,
-            discID: job.discTOC?.musicBrainzDiscID,
-            trackCount: toc.audioTracks.count
-        )
-        resolve(job: job, album: album)
+        ) {
+            resolve(job: job, album: album)
+        } else {
+            resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
+        }
     }
 
     /// Fallback when the user dismisses the picker: tag from CD-TEXT/unknown.
     public func declineReleaseChoice(jobID: JobID) {
         guard let job = jobs[jobID], let toc = job.toc else { return }
-        resolve(job: job, album: ResolvedAlbum.fallback(
-            cdText: job.cdText,
-            discID: job.discTOC?.musicBrainzDiscID,
-            trackCount: toc.audioTracks.count
-        ))
+        resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
     }
 
     public func currentSnapshots() -> [JobSnapshot] {
@@ -219,7 +214,7 @@ public actor PipelineCoordinator {
 
         Task {
             await self.runDriveStages(jobID: job.id)
-            await self.finishRipLane()
+            self.finishRipLane()
         }
     }
 
@@ -269,6 +264,16 @@ public actor PipelineCoordinator {
         if !job.ejected {
             dependencies.drive.release(bsdName: job.bsdName)
         }
+    }
+
+    /// CD-TEXT/unknown tagging for discs MusicBrainz can't (or wasn't allowed
+    /// to) resolve.
+    private func fallbackAlbum(for job: Job, trackCount: Int) -> ResolvedAlbum {
+        .fallback(
+            cdText: job.cdText,
+            discID: job.discTOC?.musicBrainzDiscID,
+            trackCount: trackCount
+        )
     }
 
     private func resolve(job: Job, album: ResolvedAlbum) {
@@ -443,11 +448,7 @@ public actor PipelineCoordinator {
            ) {
             resolve(job: job, album: album)
         } else if ranked.isEmpty {
-            resolve(job: job, album: ResolvedAlbum.fallback(
-                cdText: job.cdText,
-                discID: discTOC.musicBrainzDiscID,
-                trackCount: toc.audioTracks.count
-            ))
+            resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
         } else {
             job.snapshot.candidates = ranked.map(ReleaseCandidate.init(ranked:))
             publish(job)
