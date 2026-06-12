@@ -71,6 +71,10 @@ public actor PipelineCoordinator {
     private final class Job {
         let id = JobID()
         let bsdName: String
+        /// Set once the physical disc has left the drive. After this point a
+        /// disc reappearing on the same `bsdName` is a *different* disc, so it
+        /// must not be deduplicated against this (still-processing) job.
+        var ejected = false
         var snapshot: JobSnapshot
         var toc: TOC?
         var discTOC: DiscTOC?
@@ -190,9 +194,17 @@ public actor PipelineCoordinator {
     // MARK: Disc intake
 
     private func enqueueDisc(bsdName: String) {
-        guard !jobs.values.contains(where: { $0.bsdName == bsdName && !$0.snapshot.stage.isTerminal }) else {
+        // Dedup only against a job that still owns the physical drive slot: one
+        // that hasn't finished AND hasn't ejected its disc. A job that ejected
+        // (eject-after-rip, still encoding/uploading) no longer holds the
+        // drive, so a disc on the same bsdName is genuinely a new disc.
+        guard !jobs.values.contains(where: {
+            $0.bsdName == bsdName && !$0.snapshot.stage.isTerminal && !$0.ejected
+        }) else {
             return
         }
+        // Also guard against re-queuing a disc already waiting in line.
+        guard !pendingDiscs.contains(bsdName) else { return }
         pendingDiscs.append(bsdName)
         pumpRipLane()
     }
@@ -213,7 +225,20 @@ public actor PipelineCoordinator {
 
     private func finishRipLane() {
         ripLaneBusy = false
+        // Safety net: a disc already sitting in the drive (e.g. its appearance
+        // event landed while we were busy) gets picked up now that the lane is
+        // free. enqueueDisc dedups, so this never double-processes a disc an
+        // active job still owns.
+        rescanPresentDiscs()
         pumpRipLane()
+    }
+
+    /// Enqueue any disc physically present in a drive that no active job owns.
+    /// Backs up the DiskArbitration appearance stream against dropped events.
+    private func rescanPresentDiscs() {
+        for bsd in dependencies.drive.presentDiscs() {
+            enqueueDisc(bsdName: bsd)
+        }
     }
 
     // MARK: Stage helpers
@@ -238,7 +263,12 @@ public actor PipelineCoordinator {
             body: "\(job.snapshot.displayTitle): \(message)"
         ))
         try? FileManager.default.removeItem(at: job.stagingDir)
-        dependencies.drive.release(bsdName: job.bsdName)
+        // Only release if we still hold the drive. If the disc already ejected
+        // (afterRip failure during encode/upload), a new disc may now hold this
+        // bsdName — releasing would drop its mount protection.
+        if !job.ejected {
+            dependencies.drive.release(bsdName: job.bsdName)
+        }
     }
 
     private func resolve(job: Job, album: ResolvedAlbum) {
@@ -347,6 +377,7 @@ public actor PipelineCoordinator {
 
             if preferences.ejectTiming == .afterRip {
                 try? await dependencies.drive.eject(bsdName: job.bsdName)
+                job.ejected = true // a disc now inserted here is a new disc
                 eventContinuation?.yield(.notify(
                     title: "Disc ripped",
                     body: "\(job.snapshot.displayTitle) — you can insert the next disc."
@@ -543,11 +574,14 @@ public actor PipelineCoordinator {
             }
             await destination.close()
 
-            // Done.
+            // Done. (eject releases the DiskArbitration hold internally; for
+            // afterRip the disc was already ejected+released during the rip
+            // stage, so we must NOT release again here — by now a newly
+            // inserted disc may already hold this same bsdName.)
             if preferences.ejectTiming == .afterEverything {
                 try? await dependencies.drive.eject(bsdName: job.bsdName)
+                job.ejected = true
             }
-            dependencies.drive.release(bsdName: job.bsdName)
             setStage(job, .completed)
             await jobStore.append(JobRecord(snapshot: job.snapshot))
             eventContinuation?.yield(.notify(

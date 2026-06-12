@@ -178,6 +178,30 @@ private struct PipelineHarness {
             return false
         } != nil
     }
+
+    /// Counts distinct jobs reaching `.completed` until `count` is seen.
+    func waitForCompletions(count: Int, timeout: Duration = .seconds(60)) async -> Int {
+        let events = coordinator.events
+        return await withTaskGroup(of: Int.self) { group in
+            group.addTask {
+                var done = Set<JobID>()
+                for await event in events {
+                    if case .jobUpdated(let snapshot) = event, snapshot.stage == .completed {
+                        done.insert(snapshot.id)
+                        if done.count >= count { return done.count }
+                    }
+                }
+                return done.count
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return -1
+            }
+            let first = await group.next() ?? 0
+            group.cancelAll()
+            return first
+        }
+    }
 }
 
 // MARK: Tests
@@ -227,6 +251,31 @@ private struct PipelineHarness {
             ),
             "chosen release (not the top-ranked) used for tagging"
         )
+    }
+
+    @Test func newDiscDuringUploadIsPickedUp() async throws {
+        let harness = try PipelineHarness(releases: mockReleases(count: 1))
+        defer { harness.tearDown() }
+
+        await harness.coordinator.start()
+        harness.drive.insert("mockdisk")
+
+        // Wait until the first disc is uploading: with eject-after-rip it has
+        // already left the drive, yet its job is still non-terminal. That is
+        // the exact window where a freshly inserted disc on the same bsdName
+        // used to be silently dropped by the dedup guard.
+        let uploading = await harness.waitForEvent { event in
+            if case .jobUpdated(let snapshot) = event, snapshot.stage == .transferring { return true }
+            return false
+        }
+        #expect(uploading != nil, "first disc reaches the transfer stage")
+
+        // Insert a new disc into the same drive (same bsdName) mid-upload.
+        harness.drive.insert("mockdisk")
+
+        let completed = await harness.waitForCompletions(count: 2)
+        #expect(completed == 2, "both discs were processed; the second was not dropped")
+        #expect(harness.drive.ejectedDiscs.count == 2, "both discs ejected")
     }
 
     @Test func noMatchesFallsBackToUnknown() async throws {
