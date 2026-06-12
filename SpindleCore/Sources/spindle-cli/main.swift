@@ -37,7 +37,7 @@ commands:
   encode <wavdir> [options]
                     encode staged track WAVs (track01.wav…) to FLAC/ALAC
     --out <dir>     library root (default: ./library)
-    --format <f>    flac, alac, or both (default: flac)
+    --format <f>    flac or alac (default: flac)
     --toc "<str>"   MusicBrainz TOC string for metadata lookup
     --pick <n>      candidate to use when several match (default: best)
 
@@ -341,7 +341,7 @@ case "encode":
     var scanner = ArgumentScanner(arguments.dropFirst())
     var wavDir: String?
     var outDir = URL(fileURLWithPath: "library")
-    var formats: [AudioFormat] = [.flac]
+    var format = AudioFormat.flac
     var tocString: String?
     var pick: Int?
 
@@ -350,12 +350,10 @@ case "encode":
         case "--out":
             outDir = URL(fileURLWithPath: scanner.value(after: "--out"))
         case "--format":
-            switch scanner.value(after: "--format") {
-            case "flac": formats = [.flac]
-            case "alac": formats = [.alac]
-            case "both": formats = [.flac, .alac]
-            default: fail("--format must be flac, alac, or both")
+            guard let chosen = AudioFormat(rawValue: scanner.value(after: "--format")) else {
+                fail("--format must be flac or alac")
             }
+            format = chosen
         case "--toc":
             tocString = scanner.value(after: "--toc")
         case "--pick":
@@ -415,20 +413,18 @@ case "encode":
     }
 
     let template = NamingTemplate.standard
+    let encoder: any TrackEncoder = format == .flac ? FLACEncoder() : ALACEncoder()
     var albumFolder: URL?
     for (wav, track) in zip(wavURLs, album.tracks) {
         let tags = TrackTags(album: album, track: track)
-        for format in formats {
-            let relative = template.render(album: album, track: track) + "." + format.fileExtension
-            let destination = outDir.appendingPathComponent(relative)
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            albumFolder = destination.deletingLastPathComponent()
-            let encoder: any TrackEncoder = format == .flac ? FLACEncoder() : ALACEncoder()
-            try await encoder.encode(wav: wav, to: destination, tags: tags, art: art)
-            print("  \(relative)")
-        }
+        let relative = template.render(album: album, track: track) + "." + format.fileExtension
+        let destination = outDir.appendingPathComponent(relative)
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        albumFolder = destination.deletingLastPathComponent()
+        try await encoder.encode(wav: wav, to: destination, tags: tags, art: art)
+        print("  \(relative)")
     }
     if let art, let albumFolder {
         try art.data.write(to: albumFolder.appendingPathComponent("cover.\(art.fileExtension)"))
@@ -728,9 +724,9 @@ case "prefs-check":
     // Hidden diagnostic: proves the preferences file decodes (a malformed
     // file silently falls back to defaults, losing drive calibration).
     let prefs = PreferencesStore.load()
-    print("ripMode: \(prefs.ripMode.rawValue), formats: \(prefs.formats.map(\.rawValue))")
+    print("ripMode: \(prefs.ripMode.rawValue), format: \(prefs.format.rawValue)")
     print("driveOffsets: \(prefs.driveOffsets)")
-    print("c2 denylist: \(prefs.drivesWithUnreliableC2 ?? [])")
+    print("c2 denylist: \(prefs.drivesWithUnreliableC2)")
     print("destination: \(prefs.destination?.displayName ?? "none")")
 
 default:

@@ -34,10 +34,10 @@ struct GeneralSettingsPane: View {
         @Bindable var model = model
         return Form {
             Section {
-                Toggle("FLAC", isOn: formatBinding(.flac))
-                Toggle("Apple Lossless (ALAC)", isOn: formatBinding(.alac))
-            } header: {
-                Text("Formats")
+                Picker("Format", selection: $model.preferences.format) {
+                    Text("FLAC").tag(AudioFormat.flac)
+                    Text("Apple Lossless (ALAC)").tag(AudioFormat.alac)
+                }
             } footer: {
                 Text("FLAC is ideal for Navidrome and most servers; ALAC plays natively in Apple apps.")
                     .settingsFooter()
@@ -66,18 +66,6 @@ struct GeneralSettingsPane: View {
         .formStyle(.grouped)
     }
 
-    private func formatBinding(_ format: AudioFormat) -> Binding<Bool> {
-        Binding(
-            get: { model.preferences.formats.contains(format) },
-            set: { include in
-                var formats = model.preferences.formats.filter { $0 != format }
-                if include { formats.append(format) }
-                if formats.isEmpty { formats = [.flac] } // never zero formats
-                model.preferences.formats = formats.sorted { $0.rawValue < $1.rawValue }
-            }
-        )
-    }
-
     private var namingPreview: String {
         var album = ResolvedAlbum.fallback(cdText: nil, discID: nil, trackCount: 1)
         album.album = "Hello Nasty"
@@ -86,7 +74,8 @@ struct GeneralSettingsPane: View {
         var track = album.tracks[0]
         track.title = "Intergalactic"
         track.position = 7
-        return "Preview: " + model.preferences.namingTemplate.render(album: album, track: track) + ".flac"
+        return "Preview: " + model.preferences.namingTemplate.render(album: album, track: track)
+            + "." + model.preferences.format.fileExtension
     }
 }
 

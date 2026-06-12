@@ -21,7 +21,7 @@ public struct Preferences: Sendable, Codable, Equatable {
         case fast
     }
 
-    public var formats: [AudioFormat]
+    public var format: AudioFormat
     public var namingTemplate: NamingTemplate
     public var destination: DestinationConfig?
     public var ejectTiming: EjectTiming
@@ -30,8 +30,8 @@ public struct Preferences: Sendable, Codable, Equatable {
     /// Read-offset correction in samples, keyed by "vendor product" string.
     public var driveOffsets: [String: Int]
     /// Drives whose C2 error reporting was caught lying (same keys as
-    /// `driveOffsets`). Optional so older preference files still decode.
-    public var drivesWithUnreliableC2: [String]?
+    /// `driveOffsets`).
+    public var drivesWithUnreliableC2: [String]
     public var metadata: MetadataPreferences
     public var autoPickRelease: Bool
     public var coverArtSize: CoverArtSize
@@ -40,13 +40,14 @@ public struct Preferences: Sendable, Codable, Equatable {
     public var showMenuBarExtra: Bool
 
     public init(
-        formats: [AudioFormat] = [.flac],
+        format: AudioFormat = .flac,
         namingTemplate: NamingTemplate = .standard,
         destination: DestinationConfig? = nil,
         ejectTiming: EjectTiming = .afterRip,
         ripMode: RipMode = .secure,
         maxRetries: Int = 16,
         driveOffsets: [String: Int] = [:],
+        drivesWithUnreliableC2: [String] = [],
         metadata: MetadataPreferences = MetadataPreferences(),
         autoPickRelease: Bool = true,
         coverArtSize: CoverArtSize = .large,
@@ -54,13 +55,14 @@ public struct Preferences: Sendable, Codable, Equatable {
         notificationsEnabled: Bool = true,
         showMenuBarExtra: Bool = false
     ) {
-        self.formats = formats
+        self.format = format
         self.namingTemplate = namingTemplate
         self.destination = destination
         self.ejectTiming = ejectTiming
         self.ripMode = ripMode
         self.maxRetries = maxRetries
         self.driveOffsets = driveOffsets
+        self.drivesWithUnreliableC2 = drivesWithUnreliableC2
         self.metadata = metadata
         self.autoPickRelease = autoPickRelease
         self.coverArtSize = coverArtSize
@@ -75,15 +77,13 @@ public struct Preferences: Sendable, Codable, Equatable {
                 ? .secure(maxRetries: maxRetries, agreeingPasses: 2)
                 : .burst,
             sampleOffset: identity.flatMap { driveOffsets[$0] } ?? 0,
-            allowC2: identity.map { !(drivesWithUnreliableC2 ?? []).contains($0) } ?? true
+            allowC2: identity.map { !drivesWithUnreliableC2.contains($0) } ?? true
         )
     }
 
     public mutating func markC2Unreliable(forDrive identity: String) {
-        var list = drivesWithUnreliableC2 ?? []
-        guard !list.contains(identity) else { return }
-        list.append(identity)
-        drivesWithUnreliableC2 = list
+        guard !drivesWithUnreliableC2.contains(identity) else { return }
+        drivesWithUnreliableC2.append(identity)
     }
 }
 

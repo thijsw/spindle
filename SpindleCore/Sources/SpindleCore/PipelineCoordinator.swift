@@ -510,24 +510,23 @@ public actor PipelineCoordinator {
             var uploads: [(URL, String)] = []
             var albumFolders: Set<String> = []
 
+            let format = preferences.format
+            let encoder: any TrackEncoder = format == .flac ? FLACEncoder() : ALACEncoder()
             for ripped in job.rippedTracks {
                 let position = trackPosition(of: ripped, in: job)
                 guard let track = album.tracks.first(where: { $0.position == position }) else {
                     continue
                 }
                 let tags = TrackTags(album: album, track: track)
-                for format in preferences.formats {
-                    let relative = preferences.namingTemplate.render(album: album, track: track)
-                        + "." + format.fileExtension
-                    let target = encodedDir.appendingPathComponent(relative)
-                    try FileManager.default.createDirectory(
-                        at: target.deletingLastPathComponent(), withIntermediateDirectories: true
-                    )
-                    let encoder: any TrackEncoder = format == .flac ? FLACEncoder() : ALACEncoder()
-                    try await encoder.encode(wav: ripped.wavURL, to: target, tags: tags, art: job.art)
-                    uploads.append((target, relative))
-                    albumFolders.insert((relative as NSString).deletingLastPathComponent)
-                }
+                let relative = preferences.namingTemplate.render(album: album, track: track)
+                    + "." + format.fileExtension
+                let target = encodedDir.appendingPathComponent(relative)
+                try FileManager.default.createDirectory(
+                    at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                try await encoder.encode(wav: ripped.wavURL, to: target, tags: tags, art: job.art)
+                uploads.append((target, relative))
+                albumFolders.insert((relative as NSString).deletingLastPathComponent)
                 updateTrack(job, number: ripped.trackNumber, status: .encoded)
             }
 
