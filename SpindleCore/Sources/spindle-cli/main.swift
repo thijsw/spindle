@@ -314,6 +314,20 @@ case "rip":
         print(line)
     }
     print(String(format: "Ripped in %.1fs. %@", -started.timeIntervalSinceNow, outcome.strategy))
+
+    let log = RipLog(
+        ripDate: started,
+        drive: DiscEnumerator.driveIdentity(forMediaBSDName: bsd),
+        configuration: config,
+        toc: toc,
+        discTOC: DiscTOC(toc: toc),
+        album: nil,
+        outcome: outcome,
+        ripDuration: .seconds(-started.timeIntervalSinceNow)
+    )
+    let logURL = outDir.appendingPathComponent("rip.log")
+    try? log.render().write(to: logURL, atomically: true, encoding: .utf8)
+    print("Log → \(logURL.path)")
     if !outcome.failedTracks.isEmpty {
         print("✗ Gave up on track(s) \(outcome.failedTracks.map(String.init).joined(separator: ", ")) — not ripped within the time limit (--give-up to adjust).")
     }

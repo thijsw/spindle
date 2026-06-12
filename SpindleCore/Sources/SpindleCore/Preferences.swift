@@ -36,6 +36,10 @@ public struct Preferences: Sendable, Codable, Equatable {
     public var autoPickRelease: Bool
     public var coverArtSize: CoverArtSize
     public var writeCoverJPEG: Bool
+    /// Write an archival rip log next to the audio in each album folder.
+    public var writeRipLog: Bool
+    /// Write a per-track-file cue sheet next to the audio.
+    public var writeCueSheet: Bool
     public var notificationsEnabled: Bool
     public var showMenuBarExtra: Bool
 
@@ -52,6 +56,8 @@ public struct Preferences: Sendable, Codable, Equatable {
         autoPickRelease: Bool = true,
         coverArtSize: CoverArtSize = .large,
         writeCoverJPEG: Bool = true,
+        writeRipLog: Bool = true,
+        writeCueSheet: Bool = true,
         notificationsEnabled: Bool = true,
         showMenuBarExtra: Bool = false
     ) {
@@ -67,6 +73,8 @@ public struct Preferences: Sendable, Codable, Equatable {
         self.autoPickRelease = autoPickRelease
         self.coverArtSize = coverArtSize
         self.writeCoverJPEG = writeCoverJPEG
+        self.writeRipLog = writeRipLog
+        self.writeCueSheet = writeCueSheet
         self.notificationsEnabled = notificationsEnabled
         self.showMenuBarExtra = showMenuBarExtra
     }

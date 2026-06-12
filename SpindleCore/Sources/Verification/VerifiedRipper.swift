@@ -26,6 +26,22 @@ public struct VerifiedRipper: Sendable {
         public var c2Unreliable: Bool
         /// Tracks abandoned because they exceeded the per-track time budget.
         public var failedTracks: [Int]
+
+        public init(
+            tracks: [RippedTrack],
+            verification: VerificationResult?,
+            reRippedTracks: [Int],
+            strategy: String,
+            c2Unreliable: Bool,
+            failedTracks: [Int]
+        ) {
+            self.tracks = tracks
+            self.verification = verification
+            self.reRippedTracks = reRippedTracks
+            self.strategy = strategy
+            self.c2Unreliable = c2Unreliable
+            self.failedTracks = failedTracks
+        }
     }
 
     private let device: any CDDeviceIO

@@ -221,6 +221,16 @@ private struct PipelineHarness {
         #expect(FileManager.default.fileExists(atPath: albumDir.appendingPathComponent("02 - Closing.flac").path))
         #expect(harness.drive.ejectedDiscs == ["mockdisk"], "disc ejected after rip")
 
+        let logURL = albumDir.appendingPathComponent("Pipeline Artist - Pipeline Album 1.log")
+        let log = try String(contentsOf: logURL, encoding: .utf8)
+        #expect(log.contains("rip log"))
+        #expect(log.contains("Album        : Pipeline Artist — Pipeline Album 1"))
+
+        let cueURL = albumDir.appendingPathComponent("Pipeline Artist - Pipeline Album 1.cue")
+        let cue = try String(contentsOf: cueURL, encoding: .utf8)
+        #expect(cue.contains(#"FILE "01 - Opening.flac" WAVE"#))
+        #expect(cue.contains("  TRACK 02 AUDIO"))
+
         let history = await harness.coordinator.history()
         #expect(history.first?.album == "Pipeline Album 1")
         #expect(history.first?.succeeded == true)

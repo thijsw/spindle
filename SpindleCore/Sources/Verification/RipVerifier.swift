@@ -17,6 +17,12 @@ public struct VerificationResult: Sendable {
     /// Entry whose whole-disc CRC matches ours exactly (strongest outcome).
     public let discMatch: CTDBEntry?
 
+    public init(entries: [CTDBEntry], trackVerdicts: [Int: TrackVerdict], discMatch: CTDBEntry?) {
+        self.entries = entries
+        self.trackVerdicts = trackVerdicts
+        self.discMatch = discMatch
+    }
+
     public var summary: String {
         if entries.isEmpty { return "Not in CTDB" }
         let accurate = trackVerdicts.values.filter {

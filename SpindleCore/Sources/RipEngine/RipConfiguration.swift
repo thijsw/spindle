@@ -65,6 +65,24 @@ public struct RippedTrack: Sendable {
     /// True when the drive's C2 reporting was caught lying mid-track and the
     /// track was restarted in compare mode. C2 should stay off for this drive.
     public var c2Distrusted: Bool = false
+
+    public init(
+        trackNumber: Int,
+        wavURL: URL,
+        checksums: TrackChecksums,
+        rereads: Int,
+        unrecoverableSectors: [Int],
+        usedC2: Bool,
+        c2Distrusted: Bool = false
+    ) {
+        self.trackNumber = trackNumber
+        self.wavURL = wavURL
+        self.checksums = checksums
+        self.rereads = rereads
+        self.unrecoverableSectors = unrecoverableSectors
+        self.usedC2 = usedC2
+        self.c2Distrusted = c2Distrusted
+    }
 }
 
 public enum RipError: Error, CustomStringConvertible, Sendable {

@@ -19,9 +19,10 @@ struct SettingsView: View {
             MetadataSettingsPane()
                 .tabItem { Label("Metadata", systemImage: "music.note.list") }
         }
-        // A fixed height with internally-scrolling forms: the Destination
-        // pane (SFTP fields + footers) is the tallest and was clipping.
-        .frame(width: 560, height: 560)
+        // A fixed height with internally-scrolling forms; must fit the
+        // tallest pane (General, since the album-folder-extras section)
+        // or it grows a scroll bar.
+        .frame(width: 560, height: 720)
     }
 }
 
@@ -52,6 +53,16 @@ struct GeneralSettingsPane: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                 Text("Tokens: {albumartist} {album} {artist} {title} {track} {disc} {year} {originalyear}. Square brackets drop their content when a token inside is empty.")
+                    .settingsFooter()
+            }
+
+            Section {
+                Toggle("Write a rip log", isOn: $model.preferences.writeRipLog)
+                Toggle("Write a cue sheet", isOn: $model.preferences.writeCueSheet)
+            } header: {
+                Text("Album folder extras")
+            } footer: {
+                Text("The log records the drive, offset, per-track checksums and CTDB verdicts — proof of an accurate rip. The cue sheet describes the track layout for players and burning tools. Both land next to the audio files.")
                     .settingsFooter()
             }
 

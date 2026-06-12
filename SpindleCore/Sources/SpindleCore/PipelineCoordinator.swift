@@ -81,6 +81,11 @@ public actor PipelineCoordinator {
         var cdText: CDTextInfo?
         var rankedReleases: [ReleaseScorer.Ranked] = []
         var rippedTracks: [RippedTrack] = []
+        // Rip provenance, kept for the archival log written at encode time.
+        var ripOutcome: VerifiedRipper.Outcome?
+        var ripConfig: RipConfiguration?
+        var driveIdentity: DriveIdentity?
+        var ripDuration: Duration?
         var ctdbDiscCRC: UInt32?
         var art: CoverArt?
         var resolution: CheckedContinuation<ResolvedAlbum, Never>?
@@ -344,11 +349,16 @@ public actor PipelineCoordinator {
                 configuration: config,
                 verifier: dependencies.verifier
             )
+            let ripStarted = ContinuousClock.now
             let outcome = try await ripper.rip(toc: toc, to: job.stagingDir) { [weak self] progress in
                 guard let self else { return }
                 Task { await self.ripProgress(jobID: jobID, progress: progress) }
             }
             job.rippedTracks = outcome.tracks
+            job.ripOutcome = outcome
+            job.ripConfig = config
+            job.driveIdentity = identity
+            job.ripDuration = ContinuousClock.now - ripStarted
             job.snapshot.verificationSummary = outcome.verification?.summary ?? outcome.strategy
             if outcome.c2Unreliable, let identity {
                 eventContinuation?.yield(.c2Unreliable(driveKey: identity.offsetKey))
@@ -509,6 +519,7 @@ public actor PipelineCoordinator {
             let encodedDir = job.stagingDir.appendingPathComponent("encoded")
             var uploads: [(URL, String)] = []
             var albumFolders: Set<String> = []
+            var trackFiles: [Int: String] = [:] // position → relative path
 
             let format = preferences.format
             let encoder = format.makeEncoder()
@@ -527,6 +538,7 @@ public actor PipelineCoordinator {
                 try await encoder.encode(wav: ripped.wavURL, to: target, tags: tags, art: job.art)
                 uploads.append((target, relative))
                 albumFolders.insert((relative as NSString).deletingLastPathComponent)
+                trackFiles[position] = relative
                 updateTrack(job, number: ripped.trackNumber, status: .encoded)
             }
 
@@ -538,6 +550,46 @@ public actor PipelineCoordinator {
                     let coverURL = encodedDir.appendingPathComponent(coverRelative)
                     try? art.data.write(to: coverURL)
                     uploads.append((coverURL, coverRelative))
+                }
+            }
+
+            // Archival artifacts, named "<Artist> - <Album>" like EAC's.
+            if preferences.writeRipLog || preferences.writeCueSheet,
+               let outcome = job.ripOutcome, let toc = job.toc {
+                let baseName = PathSanitizer.component("\(album.albumArtist) - \(album.album)")
+                for folder in albumFolders {
+                    func emit(_ contents: String, _ ext: String) {
+                        let relative = folder.isEmpty ? "\(baseName).\(ext)" : "\(folder)/\(baseName).\(ext)"
+                        let url = encodedDir.appendingPathComponent(relative)
+                        guard (try? contents.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
+                        uploads.append((url, relative))
+                    }
+                    if preferences.writeRipLog {
+                        emit(RipLog(
+                            ripDate: Date(),
+                            drive: job.driveIdentity,
+                            configuration: job.ripConfig ?? RipConfiguration(),
+                            toc: toc,
+                            discTOC: job.discTOC,
+                            album: album,
+                            outcome: outcome,
+                            ripDuration: job.ripDuration
+                        ).render(), "log")
+                    }
+                    if preferences.writeCueSheet {
+                        // Only the tracks whose files live in this folder.
+                        let names = trackFiles.compactMapValues { relative -> String? in
+                            (relative as NSString).deletingLastPathComponent == folder
+                                ? (relative as NSString).lastPathComponent : nil
+                        }
+                        emit(CueSheet.render(
+                            album: album,
+                            toc: toc,
+                            discTOC: job.discTOC,
+                            fileNames: names,
+                            comment: "Spindle \(RipLog.currentAppVersion)"
+                        ), "cue")
+                    }
                 }
             }
 
