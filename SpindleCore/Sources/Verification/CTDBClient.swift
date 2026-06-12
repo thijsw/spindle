@@ -8,21 +8,17 @@ public struct CTDBEntry: Sendable, Hashable {
     public let confidence: Int
     public let discCRC32: UInt32
     public let trackCRC32s: [UInt32]
-    public let stride: Int
     public let hasParity: Bool
-    public let tocString: String
 
     public init(
         id: String, confidence: Int, discCRC32: UInt32, trackCRC32s: [UInt32],
-        stride: Int, hasParity: Bool, tocString: String
+        hasParity: Bool
     ) {
         self.id = id
         self.confidence = confidence
         self.discCRC32 = discCRC32
         self.trackCRC32s = trackCRC32s
-        self.stride = stride
         self.hasParity = hasParity
-        self.tocString = tocString
     }
 }
 
@@ -118,9 +114,7 @@ public struct CTDBClient: Sendable {
                 confidence: confidence,
                 discCRC32: discCRC,
                 trackCRC32s: trackCRCs,
-                stride: attr("stride").flatMap(Int.init) ?? 5880,
-                hasParity: attr("hasparity") != nil,
-                tocString: attr("toc") ?? ""
+                hasParity: attr("hasparity") != nil
             )
         } ?? []
     }

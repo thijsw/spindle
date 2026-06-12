@@ -111,8 +111,6 @@ actor MockCDDevice: CDDeviceIO {
 
     func readFullTOC() throws -> Data { tocData }
     func readCDTextPacks() throws -> Data? { nil }
-    func readISRC(track: Int) throws -> String? { nil }
-    func readMCN() throws -> String? { nil }
     func setSpeed(_ kbps: UInt16) throws {}
 }
 

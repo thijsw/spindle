@@ -48,7 +48,7 @@ private struct StaticCTDBVerifier: RipVerifier {
         }
         return CTDBEntry(
             id: "canon", confidence: 42, discCRC32: 0,
-            trackCRC32s: crcs, stride: 5880, hasParity: false, tocString: ""
+            trackCRC32s: crcs, hasParity: false
         )
     }
 

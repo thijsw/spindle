@@ -57,7 +57,7 @@ import Verification
         }
         let entry = CTDBEntry(
             id: "1", confidence: 50, discCRC32: 0,
-            trackCRC32s: trackCRCs, stride: 5880, hasParity: false, tocString: ""
+            trackCRC32s: trackCRCs, hasParity: false
         )
 
         let candidates = try OffsetScanner.scan(

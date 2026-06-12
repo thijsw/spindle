@@ -15,14 +15,6 @@ int ciocd_read_toc(int fd, dk_cd_read_toc_t *toc) {
     return result(ioctl(fd, DKIOCCDREADTOC, toc));
 }
 
-int ciocd_read_isrc(int fd, dk_cd_read_isrc_t *isrc) {
-    return result(ioctl(fd, DKIOCCDREADISRC, isrc));
-}
-
-int ciocd_read_mcn(int fd, dk_cd_read_mcn_t *mcn) {
-    return result(ioctl(fd, DKIOCCDREADMCN, mcn));
-}
-
 int ciocd_read_disc_info(int fd, dk_cd_read_disc_info_t *info) {
     return result(ioctl(fd, DKIOCCDREADDISCINFO, info));
 }

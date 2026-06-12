@@ -102,30 +102,6 @@ public actor CDDrive: CDDeviceIO {
         return buffer.prefix(Int(actualLength))
     }
 
-    public func readISRC(track: Int) throws -> String? {
-        var req = dk_cd_read_isrc_t()
-        req.track = UInt8(track)
-        let code = ciocd_read_isrc(fd, &req)
-        guard code == 0 else { return nil } // not encoded or not supported
-        let isrc = withUnsafeBytes(of: req.isrc) { raw in
-            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
-        }
-        let trimmed = isrc.trimmingCharacters(in: .whitespaces)
-        return trimmed.count == 12 ? trimmed : nil
-    }
-
-    public func readMCN() throws -> String? {
-        var req = dk_cd_read_mcn_t()
-        let code = ciocd_read_mcn(fd, &req)
-        guard code == 0 else { return nil }
-        let mcn = withUnsafeBytes(of: req.mcn) { raw in
-            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
-        }
-        let trimmed = mcn.trimmingCharacters(in: .whitespaces)
-        // An all-zero MCN means "not present".
-        return trimmed.isEmpty || trimmed.allSatisfy({ $0 == "0" }) ? nil : trimmed
-    }
-
     public func setSpeed(_ kbps: UInt16) throws {
         let code = ciocd_set_speed(fd, kbps)
         guard code == 0 else {

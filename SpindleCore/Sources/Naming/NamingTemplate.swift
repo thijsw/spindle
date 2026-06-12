@@ -28,7 +28,7 @@ public struct NamingTemplate: Sendable, Equatable, Codable {
     }
 
     /// Renders the relative path (without file extension) for one track.
-    public func render(album: ResolvedAlbum, track: ResolvedTrack, profile: PathSanitizer.Profile = .strict) -> String {
+    public func render(album: ResolvedAlbum, track: ResolvedTrack) -> String {
         let values = Self.tokenValues(album: album, track: track)
         var output = ""
         var groupStack: [(content: String, dropped: Bool)] = []
@@ -69,7 +69,7 @@ public struct NamingTemplate: Sendable, Equatable, Codable {
 
         let components = output
             .split(separator: "/", omittingEmptySubsequences: true)
-            .map { PathSanitizer.component(String($0), profile: profile) }
+            .map { PathSanitizer.component(String($0)) }
             .filter { !$0.isEmpty }
         return components.joined(separator: "/")
     }
@@ -90,16 +90,10 @@ public struct NamingTemplate: Sendable, Equatable, Codable {
     }
 }
 
-/// Sanitizes a single path component for the local file system and, in the
-/// strict profile, for SMB/Windows-compatible NAS volumes.
+/// Sanitizes a single path component so it is safe for the local file system
+/// and for SMB/Windows-compatible NAS volumes (the strict superset we always
+/// target, so a folder can be moved between APFS, SMB, and SFTP unchanged).
 public enum PathSanitizer {
-    public enum Profile: String, Sendable, Codable {
-        /// Only what APFS itself cannot store.
-        case minimal
-        /// Also safe for SMB shares and Windows-y NAS targets (default).
-        case strict
-    }
-
     private static let windowsReserved: Set<String> = {
         var names: Set<String> = ["CON", "PRN", "AUX", "NUL"]
         for n in 1...9 {
@@ -109,14 +103,14 @@ public enum PathSanitizer {
         return names
     }()
 
-    public static func component(_ input: String, profile: Profile = .strict) -> String {
+    public static func component(_ input: String) -> String {
         // NFC: SFTP servers and Linux hosts expect precomposed names.
         var s = input.precomposedStringWithCanonicalMapping
 
         s = String(s.map { char in
             if char == "/" || char == ":" { return "-" }
             if char.unicodeScalars.allSatisfy({ $0.properties.generalCategory == .control }) { return " " }
-            if profile == .strict, "\\<>\"|?*".contains(char) { return "-" }
+            if "\\<>\"|?*".contains(char) { return "-" }
             return char
         })
 
@@ -124,7 +118,7 @@ public enum PathSanitizer {
         while s.hasPrefix(".") { s.removeFirst() }
         while s.hasSuffix(".") || s.hasSuffix(" ") { s.removeLast() }
 
-        if profile == .strict, windowsReserved.contains(s.uppercased()) {
+        if windowsReserved.contains(s.uppercased()) {
             s += "_"
         }
 
