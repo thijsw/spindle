@@ -37,7 +37,7 @@ commands:
   encode <wavdir> [options]
                     encode staged track WAVs (track01.wav…) to FLAC/ALAC
     --out <dir>     library root (default: ./library)
-    --format <f>    flac or alac (default: flac)
+    --format <f>    flac, alac, or aac (default: flac)
     --toc "<str>"   MusicBrainz TOC string for metadata lookup
     --pick <n>      candidate to use when several match (default: best)
 
@@ -351,7 +351,7 @@ case "encode":
             outDir = URL(fileURLWithPath: scanner.value(after: "--out"))
         case "--format":
             guard let chosen = AudioFormat(rawValue: scanner.value(after: "--format")) else {
-                fail("--format must be flac or alac")
+                fail("--format must be flac, alac, or aac")
             }
             format = chosen
         case "--toc":
@@ -413,7 +413,7 @@ case "encode":
     }
 
     let template = NamingTemplate.standard
-    let encoder: any TrackEncoder = format == .flac ? FLACEncoder() : ALACEncoder()
+    let encoder = format.makeEncoder()
     var albumFolder: URL?
     for (wav, track) in zip(wavURLs, album.tracks) {
         let tags = TrackTags(album: album, track: track)

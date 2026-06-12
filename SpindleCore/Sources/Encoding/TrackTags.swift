@@ -63,11 +63,21 @@ public struct TrackTags: Sendable {
 public enum AudioFormat: String, Sendable, Codable, CaseIterable {
     case flac
     case alac
+    case aac
 
     public var fileExtension: String {
         switch self {
         case .flac: "flac"
-        case .alac: "m4a"
+        case .alac, .aac: "m4a"
+        }
+    }
+
+    /// The encoder that produces this format.
+    public func makeEncoder() -> any TrackEncoder {
+        switch self {
+        case .flac: FLACEncoder()
+        case .alac: M4AEncoder(codec: .alac)
+        case .aac: M4AEncoder(codec: .aac)
         }
     }
 }

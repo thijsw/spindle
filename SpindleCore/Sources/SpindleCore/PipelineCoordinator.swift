@@ -511,7 +511,7 @@ public actor PipelineCoordinator {
             var albumFolders: Set<String> = []
 
             let format = preferences.format
-            let encoder: any TrackEncoder = format == .flac ? FLACEncoder() : ALACEncoder()
+            let encoder = format.makeEncoder()
             for ripped in job.rippedTracks {
                 let position = trackPosition(of: ripped, in: job)
                 guard let track = album.tracks.first(where: { $0.position == position }) else {

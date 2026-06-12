@@ -2,21 +2,33 @@ import AVFoundation
 import Foundation
 import Metadata
 
-/// ALAC (.m4a) encoding via Core Audio, with iTunes-style metadata written by
-/// a passthrough AVAssetExportSession re-mux.
-public struct ALACEncoder: TrackEncoder {
-    public init() {}
+/// ALAC or AAC (.m4a) encoding via Core Audio, with iTunes-style metadata
+/// written by a passthrough AVAssetExportSession re-mux.
+public struct M4AEncoder: TrackEncoder {
+    public enum Codec: Sendable {
+        case alac
+        case aac
+    }
+
+    /// AAC bitrate (Apple Music's standard for 44.1 kHz stereo).
+    private static let aacBitRate = 256_000
+
+    let codec: Codec
+
+    public init(codec: Codec) {
+        self.codec = codec
+    }
 
     public func encode(wav: URL, to destination: URL, tags: TrackTags, art: CoverArt?) async throws {
         let temporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".\(destination.lastPathComponent).encoding.m4a")
         defer { try? FileManager.default.removeItem(at: temporary) }
 
-        try Self.transcode(wav: wav, to: temporary)
+        try Self.transcode(wav: wav, to: temporary, codec: codec)
         try await Self.writeTags(from: temporary, to: destination, tags: tags, art: art)
     }
 
-    static func transcode(wav: URL, to destination: URL) throws {
+    static func transcode(wav: URL, to destination: URL, codec: Codec) throws {
         let input: AVAudioFile
         do {
             input = try AVAudioFile(forReading: wav, commonFormat: .pcmFormatInt16, interleaved: true)
@@ -24,12 +36,18 @@ public struct ALACEncoder: TrackEncoder {
             throw EncodingError.unreadableInput(wav, String(describing: error))
         }
 
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatAppleLossless,
+        var settings: [String: Any] = [
             AVSampleRateKey: input.fileFormat.sampleRate,
             AVNumberOfChannelsKey: input.fileFormat.channelCount,
-            AVEncoderBitDepthHintKey: 16,
         ]
+        switch codec {
+        case .alac:
+            settings[AVFormatIDKey] = kAudioFormatAppleLossless
+            settings[AVEncoderBitDepthHintKey] = 16
+        case .aac:
+            settings[AVFormatIDKey] = kAudioFormatMPEG4AAC
+            settings[AVEncoderBitRateKey] = Self.aacBitRate
+        }
 
         try? FileManager.default.removeItem(at: destination)
         let output = try AVAudioFile(

@@ -12,8 +12,9 @@ the plan in `~/.claude/plans/i-like-you-to-staged-sphinx.md`.
   `/dev/rdiskN`, so secure ripping and the zero-click batch workflow are
   impossible there. A sandboxed burst-rip MAS variant remains possible later —
   the rip engine sits behind the `CDDeviceIO` protocol for exactly that reason.
-- **FLAC + ALAC only.** Both via Apple's Core Audio. No MP3 in v1 (Apple ships
-  no MP3 encoder; LAME is LGPL and the project avoids non-MIT dependencies).
+- **FLAC + ALAC + AAC (256 kbps) only.** All via Apple's Core Audio; one
+  format per rip, chosen in Settings. No MP3 (Apple ships no MP3 encoder;
+  LAME is LGPL and the project avoids non-MIT dependencies).
 - **Local folder + SFTP only.** No plain FTP (Apple removed its FTP APIs; a
   folder destination covers Finder-mounted SMB/NFS/WebDAV NAS shares).
 - **Citadel (MIT) is the only third-party dependency.** Its types aren't

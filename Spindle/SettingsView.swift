@@ -37,9 +37,10 @@ struct GeneralSettingsPane: View {
                 Picker("Format", selection: $model.preferences.format) {
                     Text("FLAC").tag(AudioFormat.flac)
                     Text("Apple Lossless (ALAC)").tag(AudioFormat.alac)
+                    Text("AAC (256 kbps)").tag(AudioFormat.aac)
                 }
             } footer: {
-                Text("FLAC is ideal for Navidrome and most servers; ALAC plays natively in Apple apps.")
+                Text("FLAC is ideal for Navidrome and most servers; ALAC plays natively in Apple apps. Both are lossless. AAC is lossy but far smaller — best when storage is tight.")
                     .settingsFooter()
             }
 

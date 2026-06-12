@@ -128,8 +128,14 @@ let tinyJPEG = Data(base64Encoded:
     }
 }
 
-@Suite struct ALACEncodingTests {
-    @Test func encodeTagAndRoundTrip() async throws {
+@Suite struct M4AEncodingTests {
+    private func iTunesString(_ metadata: [AVMetadataItem], _ identifier: AVMetadataIdentifier) async throws -> String? {
+        guard let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: identifier).first
+        else { return nil }
+        return try await item.load(.stringValue)
+    }
+
+    @Test func alacEncodeTagAndRoundTrip() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         let wavURL = dir.appendingPathComponent("in.wav")
@@ -139,19 +145,44 @@ let tinyJPEG = Data(base64Encoded:
         let album = makeTestAlbum()
         let tags = TrackTags(album: album, track: album.tracks[0])
         let art = CoverArt(data: tinyJPEG, mimeType: "image/jpeg", source: .coverArtArchive)
-        try await ALACEncoder().encode(wav: wavURL, to: alacURL, tags: tags, art: art)
+        try await M4AEncoder(codec: .alac).encode(wav: wavURL, to: alacURL, tags: tags, art: art)
 
         #expect(try decodePCM(alacURL) == pcm, "lossless round trip")
 
-        let asset = AVURLAsset(url: alacURL)
-        let metadata = try await asset.load(.metadata)
-        func string(_ identifier: AVMetadataIdentifier) async throws -> String? {
-            guard let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: identifier).first
-            else { return nil }
-            return try await item.load(.stringValue)
-        }
-        #expect(try await string(.iTunesMetadataSongName) == "First Song")
-        #expect(try await string(.iTunesMetadataAlbum) == "Test Album")
+        let metadata = try await AVURLAsset(url: alacURL).load(.metadata)
+        #expect(try await iTunesString(metadata, .iTunesMetadataSongName) == "First Song")
+        #expect(try await iTunesString(metadata, .iTunesMetadataAlbum) == "Test Album")
+
+        let artItem = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .iTunesMetadataCoverArt).first
+        let artData = try await artItem?.load(.dataValue)
+        #expect(artData == tinyJPEG, "cover art bytes intact")
+    }
+
+    @Test func aacEncodeTagAndDecode() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wavURL = dir.appendingPathComponent("in.wav")
+        let aacURL = dir.appendingPathComponent("out.m4a")
+        let pcm = try makeTestWAV(at: wavURL)
+
+        let album = makeTestAlbum()
+        let tags = TrackTags(album: album, track: album.tracks[0])
+        let art = CoverArt(data: tinyJPEG, mimeType: "image/jpeg", source: .coverArtArchive)
+        try await M4AEncoder(codec: .aac).encode(wav: wavURL, to: aacURL, tags: tags, art: art)
+
+        // Lossy: bytes differ, but the decoded duration must survive (the
+        // m4a edit list trims the codec's priming/remainder frames) within
+        // one AAC packet (1024 frames × 4 bytes).
+        let decoded = try decodePCM(aacURL)
+        #expect(abs(decoded.count - pcm.count) <= 1024 * 4, "duration preserved")
+
+        // 2 s stereo at 256 kbps must land far below the ~350 KB WAV.
+        let size = try #require(FileManager.default.attributesOfItem(atPath: aacURL.path)[.size] as? Int)
+        #expect(size < 150_000, "actually lossy-compressed (got \(size) bytes)")
+
+        let metadata = try await AVURLAsset(url: aacURL).load(.metadata)
+        #expect(try await iTunesString(metadata, .iTunesMetadataSongName) == "First Song")
+        #expect(try await iTunesString(metadata, .iTunesMetadataAlbum) == "Test Album")
 
         let artItem = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .iTunesMetadataCoverArt).first
         let artData = try await artItem?.load(.dataValue)
