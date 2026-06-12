@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 /// Reads and rewrites FLAC metadata blocks. Core Audio's FLAC encoder cannot
 /// write Vorbis comments or pictures, so Spindle rewrites the header chain
@@ -195,34 +196,33 @@ public enum FLACMetadata {
     }
 }
 
-/// Minimal JPEG/PNG header probe for the FLAC PICTURE block dimensions.
+/// Cover-art dimensions for the FLAC PICTURE block, via ImageIO so we read
+/// headers Apple already maintains (every format ImageIO knows, not just the
+/// JPEG/PNG we'd hand-parse). The values are informational in the PICTURE
+/// block, so a nil result simply leaves them zeroed.
 enum ImageDimensions {
     static func probe(_ data: Data) -> (width: Int, height: Int, bitsPerPixel: Int)? {
-        if data.count > 24, data.prefix(8) == Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
-            // PNG: IHDR is always first — width/height at 16, bit depth + color type at 24.
-            let width = Int(data.readBEUInt32(at: 16))
-            let height = Int(data.readBEUInt32(at: 20))
-            let bitDepth = Int(data[data.startIndex + 24])
-            let colorType = Int(data[data.startIndex + 25])
-            let channels = [0: 1, 2: 3, 3: 1, 4: 2, 6: 4][colorType] ?? 3
-            return (width, height, bitDepth * channels)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = props[kCGImagePropertyPixelWidth] as? Int,
+              let height = props[kCGImagePropertyPixelHeight] as? Int
+        else { return nil }
+
+        // The PICTURE "color depth" is total bits per pixel; ImageIO reports
+        // bits per component, so scale by the channel count the colour model
+        // implies (plus an alpha channel when one is present).
+        let depth = props[kCGImagePropertyDepth] as? Int ?? 8
+        let colorModel = props[kCGImagePropertyColorModel] as? String
+        let channels: Int
+        if colorModel == kCGImagePropertyColorModelGray as String {
+            channels = 1
+        } else if colorModel == kCGImagePropertyColorModelCMYK as String {
+            channels = 4
+        } else {
+            channels = 3 // RGB and anything unexpected
         }
-        if data.count > 4, data.prefix(2) == Data([0xFF, 0xD8]) {
-            // JPEG: walk segments to the first SOF marker.
-            var offset = 2
-            while offset + 9 < data.count {
-                guard data[data.startIndex + offset] == 0xFF else { return nil }
-                let marker = data[data.startIndex + offset + 1]
-                let length = Int(data[data.startIndex + offset + 2]) << 8 | Int(data[data.startIndex + offset + 3])
-                if (0xC0...0xCF).contains(marker), marker != 0xC4, marker != 0xC8, marker != 0xCC {
-                    let height = Int(data[data.startIndex + offset + 5]) << 8 | Int(data[data.startIndex + offset + 6])
-                    let width = Int(data[data.startIndex + offset + 7]) << 8 | Int(data[data.startIndex + offset + 8])
-                    return (width, height, 24)
-                }
-                offset += 2 + length
-            }
-        }
-        return nil
+        let alpha = (props[kCGImagePropertyHasAlpha] as? Bool == true) ? 1 : 0
+        return (width, height, depth * (channels + alpha))
     }
 }
 
