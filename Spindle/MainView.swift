@@ -100,14 +100,6 @@ struct ActiveJobView: View {
                         .font(.callout)
                         .foregroundStyle(.tertiary)
                 }
-
-                StagePill(stage: job.stage)
-
-                if let summary = job.verificationSummary {
-                    Label(summary, systemImage: "checkmark.seal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 Spacer()
             }
             .frame(width: 230)
@@ -141,33 +133,6 @@ struct CoverArtView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .shadow(radius: 4, y: 2)
         .animation(.easeInOut(duration: 0.4), value: image)
-    }
-}
-
-struct StagePill: View {
-    let stage: JobStage
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if !stage.isTerminal {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            Text(stage.label)
-                .font(.callout.weight(.medium))
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(background, in: Capsule())
-    }
-
-    private var background: Color {
-        switch stage {
-        case .completed: .green.opacity(0.18)
-        case .failed: .red.opacity(0.18)
-        case .awaitingMetadata: .orange.opacity(0.18)
-        default: .secondary.opacity(0.12)
-        }
     }
 }
 

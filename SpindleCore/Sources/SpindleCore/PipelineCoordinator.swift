@@ -526,16 +526,17 @@ public actor PipelineCoordinator {
             let totalBytes = uploads.reduce(Int64(0)) { $0 + Self.fileSize($1.0) }
             var bytesDone: Int64 = 0
             let id = job.id
-            emitTransferProgress(id, totalBytes > 0 ? 0 : 1)
+            transferRate = nil
+            emitTransferProgress(id, doneBytes: 0, totalBytes: totalBytes)
 
             for (url, relative) in uploads {
                 let baseDone = bytesDone
                 try await destination.upload(file: url, toRelativePath: relative) { [weak self] progress in
-                    guard let self, totalBytes > 0 else { return }
-                    Task { await self.emitTransferProgress(id, Double(baseDone + progress.bytesSent) / Double(totalBytes)) }
+                    guard let self else { return }
+                    Task { await self.emitTransferProgress(id, doneBytes: baseDone + progress.bytesSent, totalBytes: totalBytes) }
                 }
                 bytesDone += Self.fileSize(url)
-                emitTransferProgress(id, totalBytes > 0 ? Double(bytesDone) / Double(totalBytes) : 1)
+                emitTransferProgress(id, doneBytes: bytesDone, totalBytes: totalBytes)
                 if let number = trackNumber(fromRelativePath: relative, album: album) {
                     updateTrack(job, number: number, status: .transferred)
                 }
@@ -565,8 +566,25 @@ public actor PipelineCoordinator {
         ripped.trackNumber
     }
 
-    private func emitTransferProgress(_ id: JobID, _ fraction: Double) {
-        eventContinuation?.yield(.transferProgress(id, fraction: min(1, max(0, fraction))))
+    /// Smoothed transfer-rate estimator for the active upload.
+    private var transferRate: (lastBytes: Int64, lastTime: ContinuousClock.Instant, bps: Double)?
+
+    private func emitTransferProgress(_ id: JobID, doneBytes: Int64, totalBytes: Int64) {
+        let fraction = totalBytes > 0 ? Double(doneBytes) / Double(totalBytes) : 1
+        let now = ContinuousClock.now
+        var bps = transferRate?.bps ?? 0
+        if let rate = transferRate {
+            let dt = Double((now - rate.lastTime).components.seconds)
+                + Double((now - rate.lastTime).components.attoseconds) / 1e18
+            if dt > 0.05 { // ignore sub-50ms ticks; jitter swamps the estimate
+                let instant = Double(doneBytes - rate.lastBytes) / dt
+                bps = rate.bps == 0 ? instant : rate.bps * 0.7 + instant * 0.3 // EMA
+                transferRate = (doneBytes, now, bps)
+            }
+        } else {
+            transferRate = (doneBytes, now, 0)
+        }
+        eventContinuation?.yield(.transferProgress(id, fraction: min(1, max(0, fraction)), bytesPerSecond: bps))
     }
 
     private static func fileSize(_ url: URL) -> Int64 {

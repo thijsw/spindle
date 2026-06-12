@@ -76,8 +76,9 @@ final class AppModel {
         pickerJobID.flatMap { id in jobs.first { $0.id == id } }
     }
 
-    /// Live upload fraction per job (0...1), for the status bar.
+    /// Live upload fraction (0...1) and throughput (bytes/sec) per job.
     private(set) var transferFraction: [JobID: Double] = [:]
+    private(set) var transferRate: [JobID: Double] = [:]
 
     /// One-line description of what the app is doing right now, for the
     /// status bar. Prefers the most downstream activity (uploading), so the
@@ -93,15 +94,34 @@ final class AppModel {
 
         if let job = active.first(where: { $0.stage == .transferring }) {
             let pct = Int((transferFraction[job.id] ?? 0) * 100)
-            return "Uploading \(title(job)) — \(pct)%"
+            let bps = transferRate[job.id] ?? 0
+            let speed = bps > 0 ? " · \(Self.formatRate(bps))" : ""
+            return "Uploading \(title(job)) — \(pct)%\(speed)"
         }
         if let job = active.first(where: { $0.stage == .encoding }) {
             return "Encoding \(title(job))"
         }
         if let job = activeJob {
+            if job.stage == .ripping, let detail = rippingTrackDetail(job) {
+                return "Ripping \(title(job)) — \(detail)"
+            }
             return "\(job.stage.label) — \(title(job))"
         }
         return active[0].stage.label
+    }
+
+    /// "track N of M" for the track currently being read, or nil.
+    private func rippingTrackDetail(_ job: JobSnapshot) -> String? {
+        guard let current = job.tracks.first(where: {
+            if case .ripping = $0.status { return true } else { return false }
+        }) else { return nil }
+        return "track \(current.number) of \(job.tracks.count)"
+    }
+
+    private static func formatRate(_ bytesPerSecond: Double) -> String {
+        let mb = bytesPerSecond / 1_000_000
+        if mb >= 1 { return String(format: "%.1f MB/s", mb) }
+        return String(format: "%.0f KB/s", bytesPerSecond / 1000)
     }
 
     /// Upload fraction to show as a determinate bar, or nil to show a spinner.
@@ -151,6 +171,7 @@ final class AppModel {
             if snapshot.stage.isTerminal {
                 if pickerJobID == snapshot.id { pickerJobID = nil }
                 transferFraction[snapshot.id] = nil
+                transferRate[snapshot.id] = nil
                 coverArt[snapshot.id] = nil
                 Task { await self.refreshHistory() }
             }
@@ -169,8 +190,9 @@ final class AppModel {
         case .notify(let title, let body):
             postNotification(title: title, body: body)
 
-        case .transferProgress(let jobID, let fraction):
+        case .transferProgress(let jobID, let fraction, let bytesPerSecond):
             transferFraction[jobID] = fraction
+            transferRate[jobID] = bytesPerSecond
 
         case .artLoaded(let jobID, let data):
             // Decode AND downscale once, off the main thread. The original is

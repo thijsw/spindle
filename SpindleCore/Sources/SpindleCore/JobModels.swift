@@ -163,6 +163,7 @@ public enum PipelineEvent: Sendable {
     case c2Unreliable(driveKey: String)
     /// Cover art bytes for a job, delivered once (kept out of the snapshot).
     case artLoaded(JobID, Data)
-    /// Upload progress for a job's transfer stage, 0...1.
-    case transferProgress(JobID, fraction: Double)
+    /// Upload progress for a job's transfer stage: 0...1 and the current
+    /// smoothed throughput in bytes/second (0 until enough data).
+    case transferProgress(JobID, fraction: Double, bytesPerSecond: Double)
 }
