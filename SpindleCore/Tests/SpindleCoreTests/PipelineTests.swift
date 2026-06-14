@@ -116,7 +116,11 @@ private struct PipelineHarness {
     let library: URL
     let base: URL
 
-    init(releases: [MBRelease], autoPick: Bool = true) throws {
+    init(
+        releases: [MBRelease],
+        autoPick: Bool = true,
+        unmatchedDiscPolicy: Preferences.UnmatchedDiscPolicy = .tagAsUnknown
+    ) throws {
         let base = try makeTempDir()
         self.base = base
         self.library = base.appendingPathComponent("library")
@@ -126,6 +130,7 @@ private struct PipelineHarness {
         preferences.destination = .localFolder(path: library.path)
         preferences.ripMode = .fast
         preferences.autoPickRelease = autoPick
+        preferences.unmatchedDiscPolicy = unmatchedDiscPolicy
 
         let tocData = makePipelineTOCData()
         let dependencies = PipelineCoordinator.Dependencies(
@@ -300,6 +305,44 @@ private struct PipelineHarness {
         #expect(
             contents.contains { $0.hasSuffix(".flac") && $0.contains("Unknown Album") },
             "files land under Unknown Album fallback"
+        )
+    }
+
+    @Test func unknownDiscPausesForManualTags() async throws {
+        let harness = try PipelineHarness(releases: [], unmatchedDiscPolicy: .askForTags)
+        defer { harness.tearDown() }
+
+        await harness.coordinator.start()
+        harness.drive.insert("mockdisk")
+
+        let event = await harness.waitForEvent { event in
+            if case .tagsNeeded = event { return true }
+            return false
+        }
+        guard case .tagsNeeded(let jobID)? = event else {
+            Issue.record("tags were not requested for the unknown disc")
+            return
+        }
+
+        // The draft starts from the fallback (no CD-TEXT in the mock).
+        var album = try #require(await harness.coordinator.tagEditorDraft(jobID: jobID, candidateID: nil))
+        #expect(album.albumArtist == "Unknown Artist")
+        #expect(album.tracks.count == 2)
+
+        album.albumArtist = "Hand Artist"
+        album.album = "Hand Album"
+        album.date = "1999"
+        album.tracks[0].title = "Edited Opening"
+        for index in album.tracks.indices { album.tracks[index].artist = "Hand Artist" }
+        await harness.coordinator.provideTags(jobID: jobID, album: album)
+
+        #expect(await harness.waitForCompletion(), "job completes after manual tags")
+        #expect(
+            FileManager.default.fileExists(
+                atPath: harness.library
+                    .appendingPathComponent("Hand Artist/Hand Album (1999)/01 - Edited Opening.flac").path
+            ),
+            "hand-edited tags drive the file names"
         )
     }
 }

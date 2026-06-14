@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import Metadata
 import Observation
 import SpindleCore
 import UserNotifications
@@ -45,6 +46,12 @@ final class AppModel {
 
     /// Job whose release picker should be shown (nil hides the sheet).
     var pickerJobID: JobID?
+
+    /// Open manual tag-editing session (nil hides the sheet).
+    var tagEditorSession: TagEditorSession?
+    /// Jobs paused for hand-edited tags, so the toolbar can offer to reopen
+    /// the editor after the sheet was cancelled.
+    private(set) var jobsNeedingTags: Set<JobID> = []
 
     private var coordinator: PipelineCoordinator?
     private var jobStore: JobStore?
@@ -168,8 +175,12 @@ final class AppModel {
             } else {
                 jobs.append(snapshot)
             }
+            if snapshot.album != nil || snapshot.stage.isTerminal {
+                jobsNeedingTags.remove(snapshot.id)
+            }
             if snapshot.stage.isTerminal {
                 if pickerJobID == snapshot.id { pickerJobID = nil }
+                if tagEditorSession?.jobID == snapshot.id { tagEditorSession = nil }
                 transferFraction[snapshot.id] = nil
                 transferRate[snapshot.id] = nil
                 coverArt[snapshot.id] = nil
@@ -185,7 +196,13 @@ final class AppModel {
 
         case .releaseChoiceNeeded(let jobID):
             // Don't steal focus while another picker is open.
-            if pickerJobID == nil { pickerJobID = jobID }
+            if pickerJobID == nil, tagEditorSession == nil { pickerJobID = jobID }
+
+        case .tagsNeeded(let jobID):
+            jobsNeedingTags.insert(jobID)
+            if pickerJobID == nil, tagEditorSession == nil {
+                openTagEditor(jobID: jobID, candidateID: nil)
+            }
 
         case .notify(let title, let body):
             postNotification(title: title, body: body)
@@ -224,6 +241,41 @@ final class AppModel {
         guard let jobID = pickerJobID, let coordinator else { return }
         pickerJobID = nil
         Task { await coordinator.declineReleaseChoice(jobID: jobID) }
+    }
+
+    // MARK: Manual tag editing
+
+    /// Opens the tag editor for a job, pre-filled from `candidateID` (when
+    /// coming from the picker) or from CD-TEXT/fallback tags.
+    func openTagEditor(jobID: JobID, candidateID: String?) {
+        guard let coordinator else { return }
+        pickerJobID = nil
+        Task {
+            guard let draft = await coordinator.tagEditorDraft(jobID: jobID, candidateID: candidateID)
+            else { return }
+            let durations = (jobs.first { $0.id == jobID }?.tracks ?? [])
+                .reduce(into: [Int: Double]()) { $0[$1.number] = $1.durationSeconds }
+            tagEditorSession = TagEditorSession(jobID: jobID, draft: draft, durations: durations)
+        }
+    }
+
+    func submitTags(_ album: ResolvedAlbum) {
+        guard let session = tagEditorSession, let coordinator else { return }
+        tagEditorSession = nil
+        jobsNeedingTags.remove(session.jobID)
+        Task { await coordinator.provideTags(jobID: session.jobID, album: album) }
+    }
+
+    /// Dismisses the editor without resolving. A job with candidates falls
+    /// back to its picker; an unknown disc stays paused — the toolbar offers
+    /// to reopen the editor.
+    func cancelTagEditor() {
+        guard let session = tagEditorSession else { return }
+        tagEditorSession = nil
+        if let job = jobs.first(where: { $0.id == session.jobID }),
+           job.album == nil, !job.candidates.isEmpty {
+            pickerJobID = session.jobID
+        }
     }
 
     /// Staging directories survive crashes; anything present at launch is an

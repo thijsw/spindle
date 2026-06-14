@@ -183,6 +183,29 @@ public actor PipelineCoordinator {
         resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
     }
 
+    /// Pre-filled draft for the manual tag editor: the given candidate when
+    /// one is chosen, otherwise CD-TEXT/fallback tags.
+    public func tagEditorDraft(jobID: JobID, candidateID: String?) -> ResolvedAlbum? {
+        guard let job = jobs[jobID], let toc = job.toc else { return nil }
+        if let candidateID,
+           let ranked = job.rankedReleases.first(where: { $0.release.id == candidateID }),
+           let album = ResolvedAlbum(
+               release: ranked.release,
+               discID: job.discTOC?.musicBrainzDiscID,
+               audioTrackCount: toc.audioTracks.count
+           ) {
+            return album
+        }
+        return fallbackAlbum(for: job, trackCount: toc.audioTracks.count)
+    }
+
+    /// Hand-edited tags from the tag editor; resolves the job like a picker
+    /// choice would.
+    public func provideTags(jobID: JobID, album: ResolvedAlbum) {
+        guard let job = jobs[jobID] else { return }
+        resolve(job: job, album: album)
+    }
+
     public func currentSnapshots() -> [JobSnapshot] {
         jobs.values.map(\.snapshot).sorted { $0.startedAt < $1.startedAt }
     }
@@ -458,7 +481,13 @@ public actor PipelineCoordinator {
            ) {
             resolve(job: job, album: album)
         } else if ranked.isEmpty {
-            resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
+            if preferences.unmatchedDiscPolicy == .askForTags {
+                // Pause for hand-edited tags (the rip itself keeps going);
+                // the UI answers with provideTags or declineReleaseChoice.
+                eventContinuation?.yield(.tagsNeeded(job.id))
+            } else {
+                resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
+            }
         } else {
             job.snapshot.candidates = ranked.map(ReleaseCandidate.init(ranked:))
             publish(job)

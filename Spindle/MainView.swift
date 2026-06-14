@@ -25,6 +25,9 @@ struct MainView: View {
         .sheet(item: $model.pickerJobID) { _ in
             ReleasePickerSheet()
         }
+        .sheet(item: $model.tagEditorSession) { session in
+            TagEditorView(session: session)
+        }
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 if let job = model.activeJob, !job.candidates.isEmpty {
@@ -35,6 +38,18 @@ struct MainView: View {
                             .foregroundStyle(.orange)
                     }
                     .help("Several releases match this disc — choose the right one")
+                }
+            }
+            ToolbarItem(placement: .automatic) {
+                if let job = model.activeJob, job.album == nil,
+                   model.jobsNeedingTags.contains(job.id) {
+                    Button {
+                        model.openTagEditor(jobID: job.id, candidateID: nil)
+                    } label: {
+                        Label("Edit album tags", systemImage: "square.and.pencil")
+                            .foregroundStyle(.orange)
+                    }
+                    .help("This disc isn't on MusicBrainz — enter its tags before encoding")
                 }
             }
             ToolbarItem(placement: .automatic) {
@@ -293,6 +308,11 @@ struct ReleasePickerSheet: View {
                 Button("Skip — Tag From Disc Only") {
                     model.declinePicker()
                 }
+                Button("Edit Tags…") {
+                    guard let jobID = model.pickerJobID else { return }
+                    model.openTagEditor(jobID: jobID, candidateID: selection)
+                }
+                .help("Start from the selected release and correct it by hand")
                 Spacer()
                 Button("Cancel") {
                     model.pickerJobID = nil

@@ -21,6 +21,15 @@ public struct Preferences: Sendable, Codable, Equatable {
         case fast
     }
 
+    /// What happens when MusicBrainz has no match for a disc.
+    public enum UnmatchedDiscPolicy: String, Sendable, Codable, CaseIterable {
+        /// Pause before encoding and ask for hand-edited tags (the rip and
+        /// eject still proceed, so the batch keeps moving).
+        case askForTags
+        /// Tag from CD-TEXT or as "Unknown Album" and continue unattended.
+        case tagAsUnknown
+    }
+
     public var format: AudioFormat
     public var namingTemplate: NamingTemplate
     public var destination: DestinationConfig?
@@ -34,6 +43,7 @@ public struct Preferences: Sendable, Codable, Equatable {
     public var drivesWithUnreliableC2: [String]
     public var metadata: MetadataPreferences
     public var autoPickRelease: Bool
+    public var unmatchedDiscPolicy: UnmatchedDiscPolicy
     public var coverArtSize: CoverArtSize
     public var writeCoverJPEG: Bool
     /// Write an archival rip log next to the audio in each album folder.
@@ -54,6 +64,7 @@ public struct Preferences: Sendable, Codable, Equatable {
         drivesWithUnreliableC2: [String] = [],
         metadata: MetadataPreferences = MetadataPreferences(),
         autoPickRelease: Bool = true,
+        unmatchedDiscPolicy: UnmatchedDiscPolicy = .askForTags,
         coverArtSize: CoverArtSize = .large,
         writeCoverJPEG: Bool = true,
         writeRipLog: Bool = true,
@@ -71,6 +82,7 @@ public struct Preferences: Sendable, Codable, Equatable {
         self.drivesWithUnreliableC2 = drivesWithUnreliableC2
         self.metadata = metadata
         self.autoPickRelease = autoPickRelease
+        self.unmatchedDiscPolicy = unmatchedDiscPolicy
         self.coverArtSize = coverArtSize
         self.writeCoverJPEG = writeCoverJPEG
         self.writeRipLog = writeRipLog

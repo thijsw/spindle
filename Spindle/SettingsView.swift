@@ -404,6 +404,12 @@ struct MetadataSettingsPane: View {
                 Toggle("Pick the best match automatically", isOn: $model.preferences.autoPickRelease)
                 Text("When off — or when matches are too close to call — Spindle asks you to choose, without interrupting the rip.")
                     .settingsFooter()
+                Picker("When no release matches", selection: $model.preferences.unmatchedDiscPolicy) {
+                    Text("Ask me to edit the tags").tag(Preferences.UnmatchedDiscPolicy.askForTags)
+                    Text("Tag as Unknown and continue").tag(Preferences.UnmatchedDiscPolicy.tagAsUnknown)
+                }
+                Text("Asking pauses only the encode — the disc still rips and ejects, so a batch keeps moving.")
+                    .settingsFooter()
             }
 
             Section("Preferred countries") {

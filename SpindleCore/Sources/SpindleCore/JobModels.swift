@@ -157,6 +157,9 @@ public struct JobRecord: Sendable, Codable, Equatable, Identifiable {
 public enum PipelineEvent: Sendable {
     case jobUpdated(JobSnapshot)
     case releaseChoiceNeeded(JobID)
+    /// No release matched and the unmatched-disc policy asks the user for
+    /// hand-edited tags before encoding.
+    case tagsNeeded(JobID)
     case notify(title: String, body: String)
     /// The drive's C2 error reporting was caught lying; persist the verdict
     /// so future rips skip C2 for this drive.
