@@ -1,11 +1,14 @@
 #!/bin/zsh
 # Notarizes and staples dist/Spindle.app.
 #
-# Prerequisites:
+# Prerequisites (either authentication method works):
 #   - Scripts/make-app.sh release was run with SIGN_IDENTITY set to a
 #     "Developer ID Application" certificate
-#   - A notarytool keychain profile: xcrun notarytool store-credentials \
-#       spindle-notary --apple-id you@example.com --team-id TEAMID
+#   - Interactive/local: a notarytool keychain profile —
+#       xcrun notarytool store-credentials spindle-notary \
+#         --apple-id you@example.com --team-id TEAMID
+#   - CI/headless: set NOTARY_APPLE_ID, NOTARY_TEAM_ID and NOTARY_PASSWORD
+#     (an app-specific password) in the environment; they take precedence.
 #
 # Usage: Scripts/notarize.sh [profile-name]
 set -euo pipefail
@@ -17,11 +20,19 @@ ZIP="dist/Spindle-notarize.zip"
 
 [[ -d "$APP" ]] || { echo "Run Scripts/make-app.sh release first."; exit 1; }
 
+# Prefer explicit credentials from the environment (CI); otherwise fall back
+# to a stored keychain profile (local development).
+if [[ -n "${NOTARY_APPLE_ID:-}" && -n "${NOTARY_TEAM_ID:-}" && -n "${NOTARY_PASSWORD:-}" ]]; then
+    AUTH=(--apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD")
+else
+    AUTH=(--keychain-profile "$PROFILE")
+fi
+
 echo "Zipping…"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
 echo "Submitting to Apple notary service…"
-xcrun notarytool submit "$ZIP" --keychain-profile "$PROFILE" --wait
+xcrun notarytool submit "$ZIP" "${AUTH[@]}" --wait
 
 echo "Stapling…"
 xcrun stapler staple "$APP"

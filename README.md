@@ -11,6 +11,7 @@ and cover art, encodes to FLAC, ALAC, or AAC, delivers the album to a local
 folder or SFTP server (a Navidrome host, for example), and ejects so you can
 feed it the next disc.
 
+[![Latest release](https://img.shields.io/github/v/release/thijsw/spindle?label=Download&logo=apple&logoColor=white&sort=semver)](https://github.com/thijsw/spindle/releases/latest)
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white)
 ![Developer ID](https://img.shields.io/badge/Developer%20ID-not%20sandboxed-blue)
@@ -18,6 +19,15 @@ feed it the next disc.
 <img src="docs/screenshot.png" alt="Spindle waiting for a disc" width="720">
 
 </div>
+
+## Download
+
+Download the latest signed, notarized `.dmg` from the
+[**Releases**](https://github.com/thijsw/spindle/releases/latest) page, open it,
+and drag **Spindle** into Applications. Requires macOS 14 or later.
+
+Each release is built and packaged automatically by GitHub Actions — see
+[`docs/RELEASING.md`](docs/RELEASING.md) for how to cut one.
 
 ## How it works
 
