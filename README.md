@@ -1,26 +1,47 @@
+<div align="center">
+
+<img src="docs/logo.png" alt="Spindle" width="128" height="128">
+
 # Spindle
 
-A native macOS app for digitizing your CD collection: insert a disc, and
-Spindle accurately rips it, tags it with MusicBrainz metadata and cover art,
-encodes FLAC and/or Apple Lossless, and delivers the album to a local folder
-or an SFTP server (a Navidrome host, for example) — then ejects so you can
+**Accurate, hands-off CD ripping for macOS.**
+
+Insert a disc — Spindle rips it accurately, tags it with MusicBrainz metadata
+and cover art, encodes to FLAC, ALAC, or AAC, delivers the album to a local
+folder or SFTP server (a Navidrome host, for example), and ejects so you can
 feed it the next disc.
+
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)
+![Swift](https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white)
+![Developer ID](https://img.shields.io/badge/Developer%20ID-not%20sandboxed-blue)
+
+<img src="docs/screenshot.png" alt="Spindle waiting for a disc" width="720">
+
+</div>
 
 ## How it works
 
 - **Accurate ripping** — Spindle reads raw CDDA sectors through the macOS
   IOKit CD ioctls with C2 error pointers. Damaged sectors are re-read until
   consecutive reads agree; drives without C2 fall back to read-twice-compare.
-  Per-drive read-offset correction is supported, and every rip is verified
-  against the public [CUETools Database](http://cue.tools/wiki/CUETools_Database).
+  Unreadable tracks are abandoned after a per-track time budget so a batch
+  keeps moving. Per-drive read-offset correction is supported, and every rip
+  is verified against the public
+  [CUETools Database](http://cue.tools/wiki/CUETools_Database).
 - **Metadata** — the MusicBrainz DiscID is computed from the disc TOC and
   looked up on MusicBrainz (with fuzzy TOC fallback and CD-TEXT as a last
   resort). When several pressings match, Spindle asks you to pick — without
-  pausing the rip. Cover art comes from the Cover Art Archive with an iTunes
-  fallback.
-- **Encoding** — FLAC (with the full Picard-compatible Vorbis comment set,
-  embedded art, and a correct PCM MD5) and/or ALAC `.m4a`. Files are named by
-  a configurable template, `Artist/Album (Year)/01 - Title.flac` by default.
+  pausing the rip. For a disc MusicBrainz doesn't know, you can hand-edit the
+  album and per-track tags in a built-in editor, or have Spindle tag it as
+  "Unknown" and keep going unattended — your choice in Settings. Either way
+  only the encode waits; the rip and eject still proceed. Cover art comes from
+  the Cover Art Archive with an iTunes fallback.
+- **Encoding** — FLAC, ALAC, or AAC (256 kbps), one format per rip, chosen in
+  Settings. Every format carries the full Picard-compatible tag set and
+  embedded cover art; FLAC additionally gets a correct PCM MD5 in its
+  STREAMINFO. Files are named by a configurable template,
+  `Artist/Album (Year)/01 - Title.flac` by default. Each album folder can also
+  receive an archival rip log, a `.cue` sheet, and a `cover.jpg`.
 - **Delivery** — to a local folder (which covers Finder-mounted SMB/NFS NAS
   shares) or over SFTP. Uploads go to a `.part` name and are renamed on
   completion so library scanners never see partial files. Secrets live in
@@ -62,7 +83,8 @@ swift run spindle-cli toc               # print the table of contents
 swift run spindle-cli discid            # MusicBrainz DiscID for the disc
 swift run spindle-cli identify --pick 1 # MusicBrainz lookup (+ --toc for discless testing)
 swift run spindle-cli rip --out rip     # secure rip + CTDB verification
-swift run spindle-cli encode rip --toc "…" --format both
+swift run spindle-cli scan-offset rip   # find the drive's read offset via CTDB
+swift run spindle-cli encode rip --toc "…" --format flac   # flac, alac, or aac
 swift run spindle-cli push library --to sftp://user@host/srv/music
 ```
 
@@ -78,11 +100,11 @@ swift run spindle-cli push library --to sftp://user@host/srv/music
 | `RipEngine` | Secure/burst rip loop, offset correction, checksums, WAV staging |
 | `Metadata` | DiscID, MusicBrainz WS/2, release scoring, Cover Art Archive, CD-TEXT |
 | `Verification` | CUETools DB client and rip verdicts |
-| `Encoding` | Core Audio FLAC/ALAC encoders + pure-Swift FLAC tagger |
+| `Encoding` | Core Audio FLAC/ALAC/AAC encoders + pure-Swift FLAC tagger |
 | `Naming` | Filename templates and path sanitization |
 | `Transfer` | Local-folder and SFTP destinations, Keychain |
 | `SpindleCore` | The pipeline coordinator orchestrating all of the above |
-| `Spindle/` (app) | SwiftUI shell: main window, release picker, Settings |
+| `Spindle/` (app) | SwiftUI shell: main window, release picker, tag editor, Settings |
 
 Dependencies: [Citadel](https://github.com/orlandos-nl/Citadel) (MIT) for SFTP.
 Everything else is Apple frameworks.
