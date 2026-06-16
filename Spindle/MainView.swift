@@ -62,10 +62,6 @@ struct MainView: View {
     }
 }
 
-extension JobID: Identifiable {
-    public var id: UUID { raw }
-}
-
 struct IdleView: View {
     @Environment(AppModel.self) private var model
 

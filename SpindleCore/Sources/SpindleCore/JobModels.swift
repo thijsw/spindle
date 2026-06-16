@@ -2,13 +2,14 @@ import Foundation
 import Metadata
 import RipEngine
 
-public struct JobID: Hashable, Sendable, Codable, CustomStringConvertible {
+public struct JobID: Hashable, Sendable, Codable, Identifiable, CustomStringConvertible {
     public let raw: UUID
 
     public init() {
         self.raw = UUID()
     }
 
+    public var id: UUID { raw }
     public var description: String { raw.uuidString }
 }
 

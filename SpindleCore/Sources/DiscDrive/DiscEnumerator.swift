@@ -38,11 +38,15 @@ public enum DiscEnumerator {
         // an Apple SuperDrive's media node is "HL-DT-ST DVDRW GX50N Media"),
         // which matters for read-offset suggestions on rebadged drives.
         var nameBuffer = [CChar](repeating: 0, count: 128)
-        let mechanism: String? = IORegistryEntryGetName(entry, &nameBuffer) == KERN_SUCCESS
-            ? String(cString: nameBuffer)
+        let mechanism: String?
+        if IORegistryEntryGetName(entry, &nameBuffer) == KERN_SUCCESS {
+            let bytes = nameBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+            mechanism = String(decoding: bytes, as: UTF8.self)
                 .replacingOccurrences(of: " Media", with: "")
                 .trimmingCharacters(in: .whitespaces)
-            : nil
+        } else {
+            mechanism = nil
+        }
 
         // Ascend until we find a Device Characteristics dictionary.
         // (No defer here: it would release the reassigned parent, not the
