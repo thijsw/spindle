@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch/PR to save runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: SpindleCore (build + test)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: SpindleCore/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('SpindleCore/Package.swift', 'SpindleCore/Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Build
+        working-directory: SpindleCore
+        run: swift build
+
+      - name: Test
+        working-directory: SpindleCore
+        run: swift test
+
+  app:
+    name: App (compile check)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build app (unsigned)
+        run: |
+          xcodebuild \
+            -project Spindle.xcodeproj \
+            -scheme Spindle \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            SYMROOT="$PWD/.build/xcode" \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet build

@@ -11,6 +11,7 @@ and cover art, encodes to FLAC, ALAC, or AAC, delivers the album to a local
 folder or SFTP server (a Navidrome host, for example), and ejects so you can
 feed it the next disc.
 
+[![CI](https://github.com/thijsw/spindle/actions/workflows/ci.yml/badge.svg)](https://github.com/thijsw/spindle/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/thijsw/spindle?label=Download&logo=apple&logoColor=white&sort=semver)](https://github.com/thijsw/spindle/releases/latest)
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white)
