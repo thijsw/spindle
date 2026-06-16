@@ -119,6 +119,14 @@ swift run spindle-cli push library --to sftp://user@host/srv/music
 Dependencies: [Citadel](https://github.com/orlandos-nl/Citadel) (MIT) for SFTP.
 Everything else is Apple frameworks.
 
+## Authorship
+
+The vast majority of this codebase — Swift sources, tests, build scripts, CI,
+and this README — was written by Claude (Anthropic's LLM), working from the
+project's design and human direction and review. If you're reading the code,
+keep that in mind: treat it with the same scrutiny you'd give any
+machine-generated work, and please report anything that looks off.
+
 ## License
 
 © 2026 Thijs Wijnmaalen. All rights reserved (for now).
