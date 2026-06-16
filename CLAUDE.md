@@ -44,7 +44,9 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
   Apple's encoder can't tag FLAC at all)
 - `Naming` — `{token}` / `[conditional group]` templates + path sanitizer
 - `Transfer` — Destination protocol (.part upload → rename), folder + SFTP,
-  Keychain
+  Keychain; SSH host keys verified trust-on-first-use (SHA-256 fingerprint
+  pinned in Keychain via `HostKeyStore`; mismatch ⇒ `DestinationError
+  .hostKeyMismatch`, "Forget Saved Host Key" in Settings re-pins)
 - `SpindleCore` — `PipelineCoordinator` actor; drive-bound stages are exclusive
   per drive, post-rip stages run detached (2 encode / 1 transfer slots), the
   release picker NEVER blocks the rip (continuation-based `MetadataGate`)

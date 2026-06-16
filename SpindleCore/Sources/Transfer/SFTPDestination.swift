@@ -7,15 +7,17 @@ import NIOCore
 public actor SFTPDestination: Destination {
     private let config: SFTPConfig
     private let secret: String? // password or key passphrase, from Keychain
+    private let hostKeyStore: HostKeyStore
     private var client: SSHClient?
     private var sftp: SFTPClient?
     private var createdDirectories: Set<String> = []
 
     private static let chunkSize = 1 << 20
 
-    public init(config: SFTPConfig, secret: String?) {
+    public init(config: SFTPConfig, secret: String?, hostKeyStore: HostKeyStore = KeychainHostKeyStore()) {
         self.config = config
         self.secret = secret
+        self.hostKeyStore = hostKeyStore
     }
 
     public init(config: SFTPConfig) {
@@ -60,12 +62,13 @@ public actor SFTPDestination: Destination {
         sftp = nil
         createdDirectories.removeAll()
 
+        let validator = TOFUHostKeyValidator(host: config.host, port: config.port, store: hostKeyStore)
         do {
             let client = try await SSHClient.connect(
                 host: config.host,
                 port: config.port,
                 authenticationMethod: authenticationMethod(),
-                hostKeyValidator: .acceptAnything(), // TODO: TOFU pinning surfaced in Settings
+                hostKeyValidator: .custom(validator),
                 reconnect: .never
             )
             let sftp = try await client.openSFTP()
@@ -75,6 +78,9 @@ public actor SFTPDestination: Destination {
         } catch let error as DestinationError {
             throw error
         } catch {
+            // A rejected host key surfaces here; report it precisely rather than
+            // as a generic connection failure.
+            if let mismatch = validator.recordedMismatch { throw mismatch }
             throw DestinationError.connectionFailed(String(describing: error))
         }
     }

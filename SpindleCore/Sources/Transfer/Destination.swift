@@ -35,6 +35,7 @@ public enum DestinationError: Error, CustomStringConvertible, Sendable {
     case connectionFailed(String)
     case uploadFailed(path: String, reason: String)
     case missingCredentials(String)
+    case hostKeyMismatch(host: String, expected: String, actual: String)
 
     public var description: String {
         switch self {
@@ -42,6 +43,8 @@ public enum DestinationError: Error, CustomStringConvertible, Sendable {
         case .connectionFailed(let reason): "Connection failed: \(reason)"
         case .uploadFailed(let path, let reason): "Upload of \(path) failed: \(reason)"
         case .missingCredentials(let account): "No saved credentials for \(account)"
+        case .hostKeyMismatch(let host, _, let actual):
+            "The SSH host key for \(host) has changed (now \(actual)). The transfer was refused — this can mean a man-in-the-middle. If you know the server's key legitimately changed, forget the saved host key in Settings, then reconnect."
         }
     }
 }

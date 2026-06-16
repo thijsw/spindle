@@ -56,7 +56,8 @@ Each release is built and packaged automatically by GitHub Actions — see
 - **Delivery** — to a local folder (which covers Finder-mounted SMB/NFS NAS
   shares) or over SFTP. Uploads go to a `.part` name and are renamed on
   completion so library scanners never see partial files. Secrets live in
-  the Keychain.
+  the Keychain, and SSH host keys are pinned on first connect
+  (trust-on-first-use) and verified on every later upload.
 
 Spindle is a Developer ID app, not sandboxed: the App Store sandbox does not
 permit the raw drive access accurate ripping requires.

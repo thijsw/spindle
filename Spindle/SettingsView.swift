@@ -196,6 +196,12 @@ struct DestinationSettingsPane: View {
             Text("The secret is stored in your Keychain, never in preference files.")
                 .settingsFooter()
         }
+        Section {
+            Button("Forget Saved Host Key", role: .destructive, action: forgetHostKey)
+                .disabled(sftpHost.isEmpty)
+            Text("Spindle pins this server's SSH key the first time it connects and refuses to upload if the key later changes. Forget it only when you know the server's key changed for a legitimate reason — the next key you see will be trusted.")
+                .settingsFooter()
+        }
     }
 
     private var kind: Kind {
@@ -276,6 +282,13 @@ struct DestinationSettingsPane: View {
             folderPath = url.path
             applyFolder()
         }
+    }
+
+    private func forgetHostKey() {
+        guard !sftpHost.isEmpty else { return }
+        KeychainHostKeyStore().removePin(host: sftpHost, port: sftpPort)
+        testResult = "Forgot the saved host key for \(sftpHost). The next connection will trust a new key."
+        testFailed = false
     }
 
     private func chooseKeyFile() {
