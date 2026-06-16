@@ -34,21 +34,70 @@ opens with a double-click.
 | `NOTARY_TEAM_ID` | Your Apple Developer Team ID |
 | `NOTARY_PASSWORD` | An [app-specific password](https://support.apple.com/102654) for that Apple ID |
 
-### Exporting the certificate
+### Where each value comes from
 
-1. In **Keychain Access**, find your *Developer ID Application* certificate,
-   right-click it → **Export**, and save a `.p12` with a password.
-2. Base64-encode it for the secret:
+All of these come from an Apple Developer account, not from this repo.
+
+> **Prerequisite:** a paid [Apple Developer Program](https://developer.apple.com/programs/)
+> membership ($99/year). The free Apple ID tier cannot create a Developer ID
+> certificate or notarize, so macOS would block the app for everyone who
+> downloads it.
+
+Check what you already have on your Mac:
+
+```sh
+security find-identity -v -p codesigning   # lists signing identities (empty = none yet)
+```
+
+#### `MACOS_SIGN_IDENTITY`, `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PWD`
+
+These three all come from one **Developer ID Application** certificate. Create
+it once:
+
+1. In **Xcode → Settings → Accounts**, add your Apple ID, select your team,
+   click **Manage Certificates**, then **+** → **Developer ID Application**.
+   This creates the certificate and its private key in your login keychain.
+   (Web alternative: developer.apple.com → Certificates → **+** → *Developer ID
+   Application* — but the Xcode route sets up the private key for you.)
+
+2. Get the identity string:
+
+   ```sh
+   security find-identity -v -p codesigning
+   ```
+
+   The quoted name is `MACOS_SIGN_IDENTITY`, e.g.
+   `Developer ID Application: Your Name (A1B2C3D4E5)`.
+
+3. Export the certificate for CI: in **Keychain Access**, find that certificate,
+   confirm it expands to show a private key, right-click → **Export**, and save
+   a `.p12`. The export password you set is **`MACOS_CERTIFICATE_PWD`**.
+
+4. Base64-encode the `.p12` for **`MACOS_CERTIFICATE`**:
 
    ```sh
    base64 -i DeveloperID.p12 | pbcopy   # now paste into MACOS_CERTIFICATE
    ```
 
-3. Find the exact identity string for `MACOS_SIGN_IDENTITY`:
+#### `NOTARY_TEAM_ID`
 
-   ```sh
-   security find-identity -v -p codesigning
-   ```
+Your 10-character Team ID — the code in parentheses at the end of the identity
+name above (`A1B2C3D4E5`), also shown under **Membership details** at
+developer.apple.com.
+
+#### `NOTARY_APPLE_ID`
+
+The email address of the Apple ID enrolled in the Developer Program.
+
+#### `NOTARY_PASSWORD`
+
+An **app-specific password**, *not* your real Apple ID password. At
+[account.apple.com](https://account.apple.com) → **Sign-In and Security →
+App-Specific Passwords**, click **+**, name it (e.g. `spindle-notary`), and copy
+the generated `xxxx-xxxx-xxxx-xxxx` string.
+
+Keep the `.p12` and the app-specific password in GitHub Secrets only — never
+commit them.
 
 ## Building locally
 
