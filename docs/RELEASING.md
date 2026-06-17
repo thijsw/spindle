@@ -18,6 +18,13 @@ auto-generated notes. You can also trigger it manually from the **Actions** tab
 (*Run workflow*); a manual run uploads the DMG as a build artifact but does not
 create a Release.
 
+The tag drives the app's version: `v1.2.3` stamps `CFBundleShortVersionString`
+= `1.2.3` (and the run number as `CFBundleVersion`) into `Info.plist` before
+building, so the About box and the DMG name match the release. The version in
+the checked-in `Info.plist` is only the development default. For a versioned
+local build, run `Scripts/set-version.sh <version> [build]` before
+`Scripts/make-app.sh` (it edits `Info.plist` — don't commit that change).
+
 ## Signing secrets (required for public builds)
 
 Without these, the workflow still produces a `.dmg`, but it is **unsigned and

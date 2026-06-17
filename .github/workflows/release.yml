@@ -26,6 +26,29 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Determine version
+        id: version
+        run: |
+          set -euo pipefail
+          BUILD="${GITHUB_RUN_NUMBER}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # v1.2.3 -> 1.2.3, used for both the app version and the DMG name.
+            MARKETING="${GITHUB_REF_NAME#v}"
+            DMG="$MARKETING"
+          else
+            # Manual runs aren't releases: keep a valid app version, label the
+            # DMG with the commit so it's identifiable.
+            MARKETING="0.0.0"
+            DMG="$(git rev-parse --short HEAD)"
+          fi
+          echo "marketing=${MARKETING}" >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "dmg=${DMG}" >> "$GITHUB_OUTPUT"
+          echo "Version ${MARKETING} (build ${BUILD}), DMG suffix ${DMG}"
+
+      - name: Stamp version into Info.plist
+        run: Scripts/set-version.sh "${{ steps.version.outputs.marketing }}" "${{ steps.version.outputs.build }}"
+
       - name: Detect signing secrets
         id: secrets
         env:
@@ -80,16 +103,11 @@ jobs:
       - name: Package the DMG
         run: Scripts/make-dmg.sh
 
-      - name: Name the DMG after the tag
+      - name: Name the DMG after the version
         id: dmg
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="$(git rev-parse --short HEAD)"
-          fi
-          NAME="Spindle-${VERSION}.dmg"
+          NAME="Spindle-${{ steps.version.outputs.dmg }}.dmg"
           mv dist/Spindle.dmg "dist/${NAME}"
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "path=dist/${NAME}" >> "$GITHUB_OUTPUT"
