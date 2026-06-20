@@ -1,3 +1,4 @@
+import Sparkle
 import SpindleCore
 import SwiftUI
 
@@ -5,6 +6,11 @@ import SwiftUI
 struct SpindleApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
+
+    // Owns the Sparkle updater for the app's lifetime. `startingUpdater: true`
+    // begins the scheduled background checks (cadence from Info.plist).
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
 
     var body: some Scene {
         WindowGroup("Spindle") {
@@ -14,6 +20,11 @@ struct SpindleApp: App {
                 .task { model.start() }
         }
         .defaultSize(width: 820, height: 560)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesView(updater: updaterController.updater)
+            }
+        }
 
         Settings {
             SettingsView()
@@ -21,7 +32,7 @@ struct SpindleApp: App {
         }
 
         MenuBarExtra(isInserted: menuBarBinding, content: {
-            MenuBarContent()
+            MenuBarContent(updater: updaterController.updater)
                 .environment(model)
         }, label: {
             Image(systemName: "opticaldisc")
@@ -44,6 +55,7 @@ struct SpindleApp: App {
 
 struct MenuBarContent: View {
     @Environment(AppModel.self) private var model
+    let updater: SPUUpdater
 
     var body: some View {
         // Reads only the coarse summary string (changes on stage
@@ -52,6 +64,7 @@ struct MenuBarContent: View {
         // the app.
         Text(model.menuBarSummary)
         Divider()
+        CheckForUpdatesView(updater: updater)
         SettingsLink {
             Text("Settings…")
         }

@@ -34,5 +34,13 @@
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
+	<key>SUFeedURL</key>
+	<string>https://thijsw.github.io/spindle/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>hOgpe/4uX9jnUPLxnQ2TKEJ9jZr4rBPEhxDe0xzaXhg=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>604800</integer>
 </dict>
 </plist>

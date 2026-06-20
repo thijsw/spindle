@@ -25,10 +25,12 @@ feed it the next disc.
 
 Download the latest signed, notarized `.dmg` from the
 [**Releases**](https://github.com/thijsw/spindle/releases/latest) page, open it,
-and drag **Spindle** into Applications. Requires macOS 14 or later.
+and drag **Spindle** into Applications. Requires macOS 14 or later. Once
+installed, Spindle keeps itself up to date — it checks for new versions on
+launch (via [Sparkle](https://sparkle-project.org)) and offers them in place.
 
-Each release is built and packaged automatically by GitHub Actions — see
-[`docs/RELEASING.md`](docs/RELEASING.md) for how to cut one.
+Each release is built, signed, notarized and packaged automatically by GitHub
+Actions — see [`docs/RELEASING.md`](docs/RELEASING.md) for how to cut one.
 
 ## How it works
 
@@ -118,7 +120,8 @@ swift run spindle-cli push library --to sftp://user@host/srv/music
 | `SpindleCore` | The pipeline coordinator orchestrating all of the above |
 | `Spindle/` (app) | SwiftUI shell: main window, release picker, tag editor, Settings |
 
-Dependencies: [Citadel](https://github.com/orlandos-nl/Citadel) (MIT) for SFTP.
+Dependencies: [Citadel](https://github.com/orlandos-nl/Citadel) (MIT) for SFTP,
+and [Sparkle](https://github.com/sparkle-project/Sparkle) for in-app updates.
 Everything else is Apple frameworks.
 
 ## Authorship

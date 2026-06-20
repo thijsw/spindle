@@ -40,6 +40,7 @@ opens with a double-click.
 | `NOTARY_APPLE_ID` | The Apple ID email used for notarization |
 | `NOTARY_TEAM_ID` | Your Apple Developer Team ID |
 | `NOTARY_PASSWORD` | An [app-specific password](https://support.apple.com/102654) for that Apple ID |
+| `SPARKLE_PRIVATE_KEY` | The Sparkle EdDSA **private** key used to sign auto-updates (see *Auto-updates* below) |
 
 ### Where each value comes from
 
@@ -105,6 +106,32 @@ the generated `xxxx-xxxx-xxxx-xxxx` string.
 
 Keep the `.p12` and the app-specific password in GitHub Secrets only — never
 commit them.
+
+## Auto-updates (Sparkle)
+
+The app ships with [Sparkle](https://sparkle-project.org); it checks for new
+versions on launch and offers them in place. Each release the workflow
+EdDSA-signs the `.dmg` and publishes a Sparkle **appcast** to GitHub Pages at
+`https://thijsw.github.io/spindle/appcast.xml` (the URL baked into `Info.plist`
+as `SUFeedURL`). The `.dmg` itself stays on the GitHub Release; only the small
+`appcast.xml` lives on Pages, and each release's item is merged into the
+existing feed so older versions persist.
+
+Trust is rooted in an **EdDSA key pair**, separate from Apple code signing:
+
+- The **public** key is in `Info.plist` as `SUPublicEDKey` (safe to commit).
+- The **private** key signs each update and lives in two places: your login
+  Keychain (created by Sparkle's `generate_keys`) and the `SPARKLE_PRIVATE_KEY`
+  GitHub Secret (so CI can sign). **Back it up** — `generate_keys -x file`
+  exports it. If you lose it, you cannot ship an update existing installs will
+  accept; you'd have to ship a new public key in a fresh build and break the
+  auto-update chain for current users.
+
+GitHub Pages must be enabled with **Source: GitHub Actions** (Settings → Pages);
+this repo already is. To regenerate the key from scratch, run
+`Scripts`-adjacent Sparkle tools: `generate_keys` (prints the new
+`SUPublicEDKey`), update `Info.plist`, and reset the `SPARKLE_PRIVATE_KEY`
+secret.
 
 ## Building locally
 

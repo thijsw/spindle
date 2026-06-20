@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		BF0000000000000000000001 /* SpindleCore in Frameworks */ = {isa = PBXBuildFile; productRef = PR0000000000000000000001 /* SpindleCore */; };
+		BF0000000000000000000002 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = PR0000000000000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -45,6 +46,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BF0000000000000000000001 /* SpindleCore in Frameworks */,
+				BF0000000000000000000002 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -88,6 +90,7 @@
 			name = Spindle;
 			packageProductDependencies = (
 				PR0000000000000000000001 /* SpindleCore */,
+				PR0000000000000000000002 /* Sparkle */,
 			);
 			productName = Spindle;
 			productReference = AP0000000000000000000001 /* Spindle.app */;
@@ -118,6 +121,7 @@
 			mainGroup = MG0000000000000000000001;
 			packageReferences = (
 				LP0000000000000000000001 /* XCLocalSwiftPackageReference "SpindleCore" */,
+				RP0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = PD0000000000000000000001 /* Products */;
@@ -270,10 +274,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		RP0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		PR0000000000000000000001 /* SpindleCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SpindleCore;
+		};
+		PR0000000000000000000002 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = RP0000000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

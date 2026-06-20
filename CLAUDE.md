@@ -17,9 +17,14 @@ the plan in `~/.claude/plans/i-like-you-to-staged-sphinx.md`.
   LAME is LGPL and the project avoids non-MIT dependencies).
 - **Local folder + SFTP only.** No plain FTP (Apple removed its FTP APIs; a
   folder destination covers Finder-mounted SMB/NFS/WebDAV NAS shares).
-- **Citadel (MIT) is the only third-party dependency.** Its types aren't
+- **Two third-party dependencies: Citadel and Sparkle (both permissive).**
+  Citadel (MIT, for SFTP) is a `SpindleCore` package dep; its types aren't
   Sendable-annotated, so the `Transfer` module compiles in Swift 5 language
-  mode; the `SFTPDestination` actor provides the real isolation.
+  mode and the `SFTPDestination` actor provides the real isolation. Sparkle
+  (the app shell's auto-updater, added for v0.2.0) is an *app-target* SPM dep
+  in `Spindle.xcodeproj` only — `SpindleCore` stays dependency-light. Sparkle
+  was a deliberate amendment to the old "Citadel only" rule (user-approved,
+  June 2026); the bar remains permissive licenses only (no LGPL/copyleft).
 - **AccurateRip is deliberately absent** — its database requires written
   permission (commercial apps need a paid license). Verification uses the
   public CUETools DB (db.cue.tools) instead; `Verification.RipVerifier` is the

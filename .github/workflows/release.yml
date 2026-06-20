@@ -14,10 +14,14 @@ on:
 
 permissions:
   contents: write # create releases and upload assets
+  pages: write # publish the Sparkle appcast to GitHub Pages
+  id-token: write # required by actions/deploy-pages
 
 jobs:
   build:
     runs-on: macos-15
+    outputs:
+      appcast: ${{ steps.appcast.outputs.generated }}
     steps:
       - uses: actions/checkout@v5
 
@@ -136,3 +140,67 @@ jobs:
           files: ${{ steps.dmg.outputs.path }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      # --- Sparkle appcast (auto-update feed) -------------------------------
+      # Only on real tag releases that were properly signed. The DMG stays on
+      # the GitHub Release; we publish just the small appcast.xml to Pages,
+      # merging the new item into the previously published feed.
+      - name: Generate Sparkle appcast
+        id: appcast
+        if: startsWith(github.ref, 'refs/tags/') && steps.secrets.outputs.signing == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          # Sparkle's command-line tools (sign_update) come from its tarball.
+          curl -sL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.9.3/Sparkle-2.9.3.tar.xz
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar -xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+
+          mkdir -p _site
+          # Carry forward the currently published feed so older versions persist.
+          curl -sfL "https://thijsw.github.io/spindle/appcast.xml" \
+            -o "$RUNNER_TEMP/existing-appcast.xml" && \
+            EXISTING="$RUNNER_TEMP/existing-appcast.xml" || EXISTING=""
+
+          DMG="${{ steps.dmg.outputs.path }}" \
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.dmg.outputs.name }}" \
+          VERSION="${{ steps.version.outputs.marketing }}" \
+          BUILD="${{ steps.version.outputs.build }}" \
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" \
+          EXISTING_APPCAST="$EXISTING" \
+          OUT="_site/appcast.xml" \
+          SPARKLE_BIN="$RUNNER_TEMP/sparkle/bin" \
+          Scripts/make-appcast.sh
+
+          # A tiny landing page so the Pages site root isn't a 404.
+          cat > _site/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8"><title>Spindle updates</title>
+          <h1>Spindle</h1>
+          <p>This site hosts the Sparkle <a href="appcast.xml">appcast.xml</a>
+          auto-update feed. Downloads live on the
+          <a href="https://github.com/thijsw/spindle/releases">Releases page</a>.</p>
+          HTML
+
+          echo "generated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload appcast as Pages artifact
+        if: steps.appcast.outputs.generated == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  # Deploy the appcast to GitHub Pages. Separate job because deploy-pages must
+  # run in the github-pages environment.
+  publish-appcast:
+    needs: build
+    if: needs.build.outputs.appcast == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
