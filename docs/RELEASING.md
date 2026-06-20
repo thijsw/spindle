@@ -111,9 +111,15 @@ commit them.
 The workflow just runs the same scripts you can run by hand:
 
 ```sh
-SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" Scripts/make-app.sh release
-Scripts/notarize.sh                 # uses a `spindle-notary` keychain profile…
-NOTARY_APPLE_ID=you@example.com NOTARY_TEAM_ID=TEAMID NOTARY_PASSWORD=app-specific \
-  Scripts/notarize.sh               # …or pass credentials via the environment
-Scripts/make-dmg.sh                 # → dist/Spindle.dmg
+export SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+Scripts/make-app.sh release         # build + sign the app
+Scripts/notarize.sh dist/Spindle.app   # notarize + staple the app
+Scripts/make-dmg.sh                 # package + sign the .dmg (uses SIGN_IDENTITY)
+Scripts/notarize.sh dist/Spindle.dmg   # notarize + staple the .dmg → dist/Spindle.dmg
 ```
+
+Both the app **and** the disk image are notarized and stapled, so a downloaded
+`.dmg` passes Gatekeeper on first mount and the app launches cleanly even
+offline. `notarize.sh` uses a `spindle-notary` keychain profile by default, or
+reads `NOTARY_APPLE_ID` / `NOTARY_TEAM_ID` / `NOTARY_PASSWORD` from the
+environment (which take precedence — this is what CI uses).

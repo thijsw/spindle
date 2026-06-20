@@ -5,3 +5,6 @@ build/
 dist/
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Signing material — must never be committed (lives in GitHub Secrets instead)
+*.p12

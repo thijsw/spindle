@@ -18,4 +18,11 @@ ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "Spindle" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
 
+# Sign the image itself so it can be notarized and stapled — without this the
+# downloaded .dmg trips Gatekeeper even though the app inside is notarized.
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+    echo "Signing the disk image with: $SIGN_IDENTITY"
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+fi
+
 echo "Built $DMG"

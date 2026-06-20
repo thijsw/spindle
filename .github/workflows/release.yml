@@ -92,16 +92,26 @@ jobs:
           SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: Scripts/make-app.sh release
 
-      - name: Notarize and staple
+      - name: Notarize and staple the app
         if: steps.secrets.outputs.signing == 'true'
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
-        run: Scripts/notarize.sh
+        run: Scripts/notarize.sh dist/Spindle.app
 
       - name: Package the DMG
+        env:
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: Scripts/make-dmg.sh
+
+      - name: Notarize and staple the DMG
+        if: steps.secrets.outputs.signing == 'true'
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: Scripts/notarize.sh dist/Spindle.dmg
 
       - name: Name the DMG after the version
         id: dmg
