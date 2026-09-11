@@ -97,38 +97,56 @@ public final class DriveMonitor: @unchecked Sendable {
         queue.sync { _ = heldDiscs.remove(bsdName) }
     }
 
+    /// The disk, or nil if DiskArbitration no longer knows about the media
+    /// (it was ejected behind our back). `DADiskCreateFromBSDName` happily
+    /// hands back an object for a device that is gone; only the description
+    /// tells them apart, and operating on such a disk dissents with
+    /// `kDAReturnBadArgument`.
+    private func presentDisk(forBSDName bsdName: String) -> DADisk? {
+        guard let disk = disk(forBSDName: bsdName),
+              DADiskCopyDescription(disk) != nil else { return nil }
+        return disk
+    }
+
     /// Unmounts every mounted volume belonging to the given whole disk.
     private func unmountVolumes(ofWholeDisk bsdName: String) async throws {
-        guard let disk = disk(forBSDName: bsdName) else { return }
+        guard let disk = presentDisk(forBSDName: bsdName) else { return }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             let box = DACallbackBox(continuation: cont)
             DADiskUnmount(
                 disk,
                 DADiskUnmountOptions(kDADiskUnmountOptionWhole),
                 { _, dissenter, context in
-                    DACallbackBox.complete(context: context, dissenter: dissenter, operation: "unmount")
+                    DACallbackBox.complete(context: context, dissenter: dissenter, operation: .unmount)
                 },
                 Unmanaged.passRetained(box).toOpaque()
             )
         }
     }
 
-    /// Ejects the disc (volumes must already be unmounted).
+    /// Ejects the disc (volumes must already be unmounted). A disc that has
+    /// already left the drive is not an error — the goal is already met.
     public func eject(bsdName: String) async throws {
-        guard let disk = disk(forBSDName: bsdName) else { return }
         release(bsdName: bsdName)
+        guard let disk = presentDisk(forBSDName: bsdName) else { return }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             let box = DACallbackBox(continuation: cont)
             DADiskEject(
                 disk,
                 DADiskEjectOptions(kDADiskEjectOptionDefault),
                 { _, dissenter, context in
-                    DACallbackBox.complete(context: context, dissenter: dissenter, operation: "eject")
+                    DACallbackBox.complete(context: context, dissenter: dissenter, operation: .eject)
                 },
                 Unmanaged.passRetained(box).toOpaque()
             )
         }
     }
+}
+
+/// A DiskArbitration request Spindle makes on a disc.
+enum DiskArbitrationOperation: String, Sendable {
+    case unmount
+    case eject
 }
 
 public struct DiskArbitrationError: Error, CustomStringConvertible, Sendable {
@@ -149,18 +167,38 @@ private final class DACallbackBox {
         self.continuation = continuation
     }
 
-    static func complete(context: UnsafeMutableRawPointer?, dissenter: DADissenter?, operation: String) {
+    static func complete(
+        context: UnsafeMutableRawPointer?,
+        dissenter: DADissenter?,
+        operation: DiskArbitrationOperation
+    ) {
         guard let context else { return }
         let box = Unmanaged<DACallbackBox>.fromOpaque(context).takeRetainedValue()
-        if let dissenter {
-            let status = DADissenterGetStatus(dissenter)
-            // "Not mounted" style dissents on unmount are fine for our purposes.
-            let reason = DADissenterGetStatusString(dissenter) as String?
-            box.continuation.resume(throwing: DiskArbitrationError(
-                operation: operation, status: Int32(bitPattern: UInt32(status)), reason: reason
-            ))
+        guard let dissenter else { box.continuation.resume(); return }
+        if let error = dissentError(
+            operation: operation,
+            status: DADissenterGetStatus(dissenter),
+            reason: DADissenterGetStatusString(dissenter) as String?
+        ) {
+            box.continuation.resume(throwing: error)
         } else {
             box.continuation.resume()
         }
     }
+}
+
+/// Maps a DiskArbitration dissent onto an error, or nil when the dissent means
+/// the operation's goal already holds.
+///
+/// `DAReturn` is a signed `mach_error_t`, so every dissent code (0xF8DA00xx) is
+/// NEGATIVE when seen as an `Int32` — never feed it to `UInt32(_:)`, that
+/// conversion traps and takes the whole app down.
+func dissentError(
+    operation: DiskArbitrationOperation,
+    status: DAReturn,
+    reason: String?
+) -> DiskArbitrationError? {
+    // Nothing was mounted, so there is nothing left to unmount.
+    if operation == .unmount, Int(status) == kDAReturnNotMounted { return nil }
+    return DiskArbitrationError(operation: operation.rawValue, status: status, reason: reason)
 }

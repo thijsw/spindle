@@ -98,6 +98,13 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
   scratched Adele "21" disc whose track 1 needed ~20 min even with run
   mapping.
 
+- DiskArbitration's `DAReturn` is a signed `mach_error_t`: every dissent code
+  (0xF8DA00xx) is NEGATIVE as an `Int32`, so `UInt32(status)` traps. That trap
+  crashed v0.1.0 mid-batch on eject. Also, `DADiskCreateFromBSDName` returns a
+  disk object for media that is already gone; only `DADiskCopyDescription`
+  (nil) tells them apart, and unmount/eject on such a disk dissents
+  `kDAReturnBadArgument` — synchronously, from inside the DADiskEject call.
+
 - `AVAudioFile.read(into:)` throws a spurious `nilError` at exact EOF — every
   read loop must guard `framePosition < length`. Already handled in Encoding;
   do the same in any new audio loop.
