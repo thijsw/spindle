@@ -57,6 +57,14 @@ if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     done
 
     sign "$APP"
+else
+    # Unsigned local builds still have to be re-signed: Xcode ad-hoc signs the
+    # app and Sparkle.framework SEPARATELY, and library validation then refuses
+    # to map the framework into the process ("different Team IDs"), so the app
+    # dies at launch in dyld. One deep ad-hoc signature over the whole bundle
+    # makes it launchable for testing (not for distribution — see notarize.sh).
+    echo "Re-signing ad-hoc (local testing build)"
+    codesign --force --deep --sign - dist/Spindle.app
 fi
 
 echo "Built dist/Spindle.app"
