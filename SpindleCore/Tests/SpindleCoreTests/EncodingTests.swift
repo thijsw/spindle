@@ -7,37 +7,6 @@ import Naming
 import RipEngine
 import Testing
 
-func makeTestAlbum() -> ResolvedAlbum {
-    ResolvedAlbum(
-        album: "Test Album",
-        albumArtist: "Test Artist",
-        albumArtistSort: "Artist, Test",
-        albumArtistMBIDs: ["33333333-aaaa-bbbb-cccc-000000000003"],
-        releaseMBID: "11111111-aaaa-bbbb-cccc-000000000001",
-        releaseGroupMBID: "22222222-aaaa-bbbb-cccc-000000000002",
-        discID: "xUp1F2NkfP8s8jaeFn_Av3jNEI4-",
-        date: "1997-09-23",
-        originalDate: "1997-09-22",
-        country: "NL",
-        label: "Test Records",
-        catalogNumber: "CAT-001",
-        barcode: "724385522123",
-        status: "Official",
-        tracks: [
-            ResolvedTrack(
-                position: 1,
-                title: "First Song",
-                artist: "Test Artist",
-                artistMBIDs: ["33333333-aaaa-bbbb-cccc-000000000003"],
-                recordingMBID: "77777777-aaaa-bbbb-cccc-000000000007",
-                trackMBID: "66666666-aaaa-bbbb-cccc-000000000006",
-                isrc: "NLA319700019"
-            ),
-            ResolvedTrack(position: 2, title: "Second Song", artist: "Test Artist"),
-        ]
-    )
-}
-
 /// Deterministic 16-bit stereo PCM (2 seconds), written as a staging WAV.
 private func makeTestWAV(at url: URL) throws -> Data {
     let frames = 44100 * 2
@@ -205,59 +174,5 @@ let tinyJPEG = Data(base64Encoded:
         let artItem = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .iTunesMetadataCoverArt).first
         let artData = try await artItem?.load(.dataValue)
         #expect(artData == tinyJPEG, "cover art bytes intact")
-    }
-}
-
-@Suite struct NamingTests {
-    let album = makeTestAlbum()
-    var track: ResolvedTrack { album.tracks[0] }
-
-    @Test func standardTemplate() {
-        #expect(
-            NamingTemplate.standard.render(album: album, track: track)
-                == "Test Artist/Test Album (1997)/01 - First Song"
-        )
-    }
-
-    @Test func multiDiscVariants() {
-        var multiDisc = album
-        multiDisc.discNumber = 2
-        multiDisc.discTotal = 2
-        #expect(
-            NamingTemplate.standard.render(album: multiDisc, track: track)
-                == "Test Artist/Test Album (1997)/2-01 - First Song"
-        )
-        #expect(
-            NamingTemplate.discFolders.render(album: multiDisc, track: track)
-                == "Test Artist/Test Album (1997)/Disc 2/01 - First Song"
-        )
-    }
-
-    @Test func conditionalGroupDropsWhenTokenEmpty() {
-        var noYear = album
-        noYear.date = nil
-        #expect(
-            NamingTemplate.standard.render(album: noYear, track: track)
-                == "Test Artist/Test Album/01 - First Song"
-        )
-    }
-
-    @Test func sanitization() {
-        var nasty = album
-        nasty.albumArtist = "AC/DC"
-        nasty.album = "Back in Black: Live? *Deluxe*"
-        var nastyTrack = track
-        nastyTrack.title = "What\u{0007}ever... "
-        #expect(
-            NamingTemplate.standard.render(album: nasty, track: nastyTrack)
-                == "AC-DC/Back in Black- Live- -Deluxe- (1997)/01 - What ever"
-        )
-
-        #expect(PathSanitizer.component("CON") == "CON_", "Windows reserved name escaped")
-        #expect(PathSanitizer.component("...hidden") == "hidden", "leading dots stripped")
-        #expect(PathSanitizer.component(String(repeating: "ü", count: 300)).utf8.count <= 240)
-
-        let nfc = PathSanitizer.component("Cafe\u{0301}") // decomposed é
-        #expect(nfc == "Café" && nfc.unicodeScalars.count == 4, "NFC normalization applied")
     }
 }

@@ -3,33 +3,6 @@ import Foundation
 @testable import RipEngine
 import Testing
 
-/// Expected corrected audio for a track: the virtual disc byte stream
-/// (canonical bytes inside [0, leadOut), zeros outside) shifted by the offset.
-private func expectedAudio(trackSectors: Range<Int>, sampleOffset: Int, leadOut: Int) -> Data {
-    let start = trackSectors.lowerBound * 2352 + sampleOffset * 4
-    let end = trackSectors.upperBound * 2352 + sampleOffset * 4
-    let readable = 0 ..< (leadOut * 2352)
-    return Data((start ..< end).map { pos in
-        readable.contains(pos) ? MockCDDevice.canonicalByte(at: pos) : 0
-    })
-}
-
-private func makeTOC(trackSectors: [Range<Int>], leadOut: Int) -> TOC {
-    TOC(
-        tracks: trackSectors.enumerated().map { i, range in
-            TOCTrack(number: i + 1, session: 1, startLBA: range.lowerBound, isAudio: true, hasPreEmphasis: false)
-        },
-        sessionLeadOuts: [1: leadOut],
-        firstSession: 1,
-        lastSession: 1
-    )
-}
-
-private func wavData(_ url: URL) -> Data {
-    let data = (try? Data(contentsOf: url)) ?? Data()
-    return data.count > 44 ? data.subdata(in: 44 ..< data.count) : Data()
-}
-
 @Suite struct ChecksumTests {
     @Test func crc32MatchesStandardVector() {
         #expect(CRC32.checksum(Data("123456789".utf8)) == 0xCBF4_3926)

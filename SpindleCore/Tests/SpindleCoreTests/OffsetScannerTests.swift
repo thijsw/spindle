@@ -13,11 +13,10 @@ import Verification
     /// Simulates a drive whose correction is `trueOffset`: a rip made at
     /// offset 0 contains, at stream sample p, the canonical sample p − d
     /// (zeros outside the disc).
-    @Test func findsTheTrueOffsetFromAnOffsetZeroRip() async throws {
+    @Test(arguments: [6, -12]) func findsTheTrueOffsetFromAnOffsetZeroRip(trueOffset: Int) async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let trueOffset = 6
         let leadOut = 300 // sectors; totalSamples = 176400 (divisible by 2940)
         let trackSectors: [Range<Int>] = [0 ..< 120, 120 ..< 300]
         let toc = TOC(
@@ -64,11 +63,11 @@ import Verification
             wavURLs: wavURLs,
             toc: toc,
             entries: [entry],
-            candidates: [0, -6, 6, 102, 667]
+            candidates: [0, -6, -12, 6, 102, 667]
         )
 
         let best = try #require(candidates.first)
-        #expect(best.offset == trueOffset, "scanner recovers the simulated +6 offset")
+        #expect(best.offset == trueOffset, "scanner recovers the simulated \(trueOffset) offset")
         #expect(best.isFullMatch)
         #expect(best.confidence == 100, "both tracks matched at confidence 50")
 

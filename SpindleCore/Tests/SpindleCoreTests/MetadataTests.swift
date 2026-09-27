@@ -4,7 +4,7 @@ import Testing
 
 // A trimmed but structurally faithful WS/2 discid response (two releases,
 // the first carrying our DiscID on its medium).
-let discIDResponseJSON = """
+private let discIDResponseJSON = """
 {
   "id": "xUp1F2NkfP8s8jaeFn_Av3jNEI4-",
   "offset-count": 2,

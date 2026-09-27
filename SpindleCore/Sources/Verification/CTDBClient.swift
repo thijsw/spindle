@@ -23,7 +23,7 @@ public struct CTDBEntry: Sendable, Hashable {
     }
 }
 
-public enum CTDBError: Error, CustomStringConvertible, Sendable {
+public enum CTDBError: Error, CustomStringConvertible, Sendable, Equatable {
     case http(Int)
     case malformedResponse(String)
     case invalidBaseURL(URL)

@@ -38,23 +38,40 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
 - `CIOCD` — C shim for the IOCDMedia BSD ioctls (Swift can't call variadic ioctl)
 - `DiscDrive` — DiskArbitration monitor (incl. cddafs mount-approval dissent),
   `CDDrive` actor on `/dev/rdiskN`, full-TOC parser, drive identity/offset table
-- `RipEngine` — secure/burst loop, ±offset with edge zero-fill, CRC32 +
-  AccurateRip v1/v2 + CTDB-skip checksums, WAV staging
+- `RipEngine` — `DiscRipper` → `TrackRipper` (orchestration only) →
+  `ResilientReader` (damage mapping, run crossing, cache flush, slow-down)
+  + `Settler` (voting re-reads) + `SectorSpan` (offset byte-window ↔ sector
+  math); `DamageMap` shared across passes; zlib-backed CRC32 + AccurateRip
+  v1/v2 + CTDB-skip checksums (`CTDBWindow.trackWindows(for:)` is the ONE
+  source of the per-track windows); WAV staging
+- `Net` — Foundation-only `HTTPFetcher` (session, User-Agent, HTTP check)
+  shared by the MusicBrainz, Cover Art Archive and CTDB clients
 - `Metadata` — pure-Swift MusicBrainz DiscID (validated against libdiscid
-  vectors), throttled WS/2 client (1 req/s + User-Agent are MANDATORY),
-  release scorer, CAA client, CD-TEXT via DRCDTextBlock
+  vectors), throttled WS/2 client (1 req/s + User-Agent are MANDATORY; the
+  throttle reserves its slot BEFORE sleeping so concurrent callers can't
+  collapse onto one instant), release scorer, `MBRelease.bestMedium`, CAA
+  client, CD-TEXT via DRCDTextBlock
 - `Verification` — CTDB lookup2 v3 client + verdict matching
-- `Encoding` — Core Audio encoders + pure-Swift FLAC metadata block rewriter
-  (Vorbis comments, PICTURE, STREAMINFO MD5 patched from our own PCM hash —
-  Apple's encoder can't tag FLAC at all)
+- `Encoding` — one `Transcoder` loop for every format; `TrackTags.fields`
+  is the canonical Picard tag set (`TagKey`), mapped to Vorbis comments in
+  FLAC and to iTunes atoms + `----:com.apple.iTunes:*` freeform atoms in
+  M4A (so ALAC/AAC carry MusicBrainz IDs too); pure-Swift FLAC metadata
+  block rewriter (STREAMINFO MD5 patched from our own PCM hash — Apple's
+  encoder can't tag FLAC at all)
 - `Naming` — `{token}` / `[conditional group]` templates + path sanitizer
 - `Transfer` — Destination protocol (.part upload → rename), folder + SFTP,
   Keychain; SSH host keys verified trust-on-first-use (SHA-256 fingerprint
   pinned in Keychain via `HostKeyStore`; mismatch ⇒ `DestinationError
   .hostKeyMismatch`, "Forget Saved Host Key" in Settings re-pins)
 - `SpindleCore` — `PipelineCoordinator` actor; drive-bound stages are exclusive
-  per drive, post-rip stages run detached (2 encode / 1 transfer slots), the
-  release picker NEVER blocks the rip (continuation-based `MetadataGate`)
+  per drive, post-rip stages run detached (2 encode / 1 transfer slots, each
+  held only for its own stage), the release picker NEVER blocks the rip
+  (`MetadataGate` resumes EVERY waiter — identify's art fetch and the
+  processing stage both park there). Preferences are snapshotted per job
+  (destination is read at delivery time). Shared with the CLI: `AlbumEncoder`
+  (walks a pure `DeliveryPlan`), `ReleaseLookup`, `JobPresentation` /
+  `DisplayFormat`, `DestinationDraft`. The debug CLI is one file per command
+  under `spindle-cli/Commands/`.
 
 ## Hard-won gotchas
 
@@ -123,9 +140,18 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
 
 - Xcode 26.3 is installed and licensed (since June 2026); no `DEVELOPER_DIR`
   workaround needed anymore.
-- `cd SpindleCore && swift build && swift test` — core + Swift Testing suite.
-  If the build fails on a precompiled header from another checkout path
-  (the repo was moved once), `rm -rf SpindleCore/.build` and retry.
+- `cd SpindleCore && swift build && swift test` — core + Swift Testing suite
+  (~130 tests, ~6 s). If the build fails on a precompiled header from another
+  checkout path (the repo was moved once), `rm -rf SpindleCore/.build` and
+  retry. A killed/hung `swift test` leaves a SwiftPM lock on `.build` that
+  makes later runs silently wait — `pkill -f swift-test` first. macOS has no
+  `timeout`; use `perl -e 'alarm 300; exec @ARGV' swift test`.
+- Test conventions: shared fixtures live in `Tests/.../Support/`
+  (`Fixtures.swift`: `makeTOC`, `expectedAudio`, `canonicalCTDBEntry`,
+  `StaticCTDBVerifier`, `makeTestAlbum`, `withTempDir`; `StubHTTP.swift`:
+  per-test `HTTPStub` for the web clients; `MockCDDevice`). Pipeline tests
+  use an `EventRecorder` — never cancel a `for await` on the coordinator's
+  single-consumer event stream, it finishes the stream.
 - `xcodebuild -project Spindle.xcodeproj -scheme Spindle build` — the app.
   The pbxproj is hand-authored (objectVersion 77, synchronized folder for
   `Spindle/`, local package ref to `SpindleCore`); edit it textually.

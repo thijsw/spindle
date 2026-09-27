@@ -84,59 +84,118 @@ private struct MockArt: ArtProviding {
 
 private let mockArt = CoverArt(data: Data(repeating: 0xAB, count: 2048), mimeType: "image/jpeg", source: .coverArtArchive)
 
-private struct MockVerifier: RipVerifier {
-    func verify(
-        toc: TOC, trackChecksums: [Int: TrackChecksums], ctdbDiscCRC32: UInt32?
-    ) async throws -> VerificationResult {
-        CTDBVerifier.match(
-            entries: [],
-            audioTrackNumbers: toc.audioTracks.map(\.number),
-            trackChecksums: trackChecksums,
-            ctdbDiscCRC32: ctdbDiscCRC32
-        )
-    }
-}
-
 /// Two-track release JSON (so ResolvedAlbum has titles for both tracks).
-private func mockReleases(count: Int) -> [MBRelease] {
-    let single = """
-    {
-      "id": "REL-%d",
-      "title": "Pipeline Album %d",
-      "status": "Official",
-      "date": "2001-01-0%d",
-      "country": "NL",
-      "artist-credit": [ { "name": "Pipeline Artist", "artist": { "id": "ART-1", "name": "Pipeline Artist", "sort-name": "Artist, Pipeline" } } ],
-      "media": [ {
-        "position": 1, "format": "CD", "track-count": 2,
-        "tracks": [
-          { "id": "T1-%d", "position": 1, "title": "Opening", "recording": { "id": "R1-%d", "title": "Opening" } },
-          { "id": "T2-%d", "position": 2, "title": "Closing", "recording": { "id": "R2-%d", "title": "Closing" } }
-        ]
-      } ]
+/// With `discs > 1` our two-track disc is the LAST medium of a multi-disc
+/// release (the others carry five dummy tracks).
+private func mockReleases(count: Int, discs: Int = 1) -> [MBRelease] {
+    func medium(_ position: Int, _ n: Int, ours: Bool) -> String {
+        if ours {
+            return """
+            { "position": \(position), "format": "CD", "track-count": 2,
+              "tracks": [
+                { "id": "T1-\(n)", "position": 1, "title": "Opening", "recording": { "id": "R1-\(n)", "title": "Opening" } },
+                { "id": "T2-\(n)", "position": 2, "title": "Closing", "recording": { "id": "R2-\(n)", "title": "Closing" } }
+              ] }
+            """
+        }
+        let tracks = (1 ... 5).map { #"{ "id": "X\#(position)-\#($0)", "position": \#($0), "title": "Other \#($0)" }"# }
+        return #"{ "position": \#(position), "format": "CD", "track-count": 5, "tracks": [\#(tracks.joined(separator: ","))] }"#
     }
-    """
-    return (1...count).compactMap { n in
-        let json = String(format: single, n, n, n, n, n, n, n)
+    return (1 ... count).compactMap { n in
+        let media = (1 ... discs).map { medium($0, n, ours: $0 == discs) }
+        let json = """
+        {
+          "id": "REL-\(n)",
+          "title": "Pipeline Album \(n)",
+          "status": "Official",
+          "date": "2001-01-0\(n)",
+          "country": "NL",
+          "artist-credit": [ { "name": "Pipeline Artist", "artist": { "id": "ART-1", "name": "Pipeline Artist", "sort-name": "Artist, Pipeline" } } ],
+          "media": [ \(media.joined(separator: ",")) ]
+        }
+        """
         return try? JSONDecoder().decode(MBRelease.self, from: Data(json.utf8))
     }
 }
 
 // MARK: Harness
 
+/// Consumes the coordinator's single-consumer event stream exactly once and
+/// lets tests wait for events with a timeout that never cancels the stream
+/// (cancelling a `for await` finishes an AsyncStream for good).
+private actor EventRecorder {
+    private var events: [PipelineEvent] = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var task: Task<Void, Never>?
+
+    func start(_ stream: AsyncStream<PipelineEvent>) {
+        task = Task {
+            for await event in stream {
+                self.record(event)
+            }
+        }
+    }
+
+    private func record(_ event: PipelineEvent) {
+        events.append(event)
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+
+    /// First recorded event (from `startIndex` on) matching the predicate,
+    /// waiting up to `timeout` for new ones. Returns the event and the
+    /// index after it, so a caller can continue from where it left off.
+    func first(
+        after startIndex: Int,
+        timeout: Duration,
+        where predicate: @escaping @Sendable (PipelineEvent) -> Bool
+    ) async -> (event: PipelineEvent, next: Int)? {
+        let deadline = ContinuousClock.now + timeout
+        var index = startIndex
+        while true {
+            while index < events.count {
+                let event = events[index]
+                index += 1
+                if predicate(event) { return (event, index) }
+            }
+            let remaining = deadline - ContinuousClock.now
+            guard remaining > .zero else { return nil }
+            let woke = await withTaskGroup(of: Bool.self) { group in
+                group.addTask { await self.waitForNewEvent(); return true }
+                group.addTask { try? await Task.sleep(for: remaining); return false }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+            if !woke { return nil }
+        }
+    }
+
+    private func waitForNewEvent() async {
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    var count: Int { events.count }
+}
+
 private struct PipelineHarness {
     let coordinator: PipelineCoordinator
     let drive: MockDriveController
     let library: URL
     let base: URL
+    let recorder = EventRecorder()
 
     init(
         releases: [MBRelease],
         autoPick: Bool = true,
         unmatchedDiscPolicy: Preferences.UnmatchedDiscPolicy = .tagAsUnknown,
+        ejectTiming: Preferences.EjectTiming = .afterRip,
+        destination: Bool = true,
         fuzzy: Bool = false,
         lookupDelay: Duration? = nil,
-        art: CoverArt? = nil
+        art: CoverArt? = nil,
+        deviceFails: Bool = false
     ) throws {
         let base = try makeTempDir()
         self.base = base
@@ -144,18 +203,23 @@ private struct PipelineHarness {
         self.drive = MockDriveController()
 
         var preferences = Preferences()
-        preferences.destination = .localFolder(path: library.path)
+        preferences.destination = destination ? .localFolder(path: library.path) : nil
         preferences.ripMode = .fast
         preferences.autoPickRelease = autoPick
         preferences.unmatchedDiscPolicy = unmatchedDiscPolicy
+        preferences.ejectTiming = ejectTiming
 
+        struct DeviceUnavailable: Error {}
         let tocData = makePipelineTOCData()
         let dependencies = PipelineCoordinator.Dependencies(
             drive: drive,
-            deviceFactory: { _ in MockCDDevice(leadOut: 400, tocData: tocData) },
+            deviceFactory: { _ in
+                if deviceFails { throw DeviceUnavailable() }
+                return MockCDDevice(leadOut: 400, tocData: tocData)
+            },
             metadata: MockMetadata(releases: releases, fuzzy: fuzzy, delay: lookupDelay),
             art: MockArt(art: art),
-            verifier: MockVerifier(),
+            verifier: StaticCTDBVerifier(),
             destinationFactory: { config in
                 guard case .localFolder(let path) = config else { fatalError() }
                 return LocalFolderDestination(path: path)
@@ -169,60 +233,73 @@ private struct PipelineHarness {
         )
     }
 
+    /// Starts the coordinator and the event recorder.
+    func start() async {
+        await recorder.start(coordinator.events)
+        await coordinator.start()
+    }
+
     func tearDown() {
         try? FileManager.default.removeItem(at: base)
     }
 
-    /// Consumes pipeline events until the predicate matches or a timeout hits.
+    /// The first not-yet-consumed event matching the predicate, or nil on timeout.
     func waitForEvent(
         timeout: Duration = .seconds(30),
         until predicate: @escaping @Sendable (PipelineEvent) -> Bool
     ) async -> PipelineEvent? {
-        let events = coordinator.events
-        return await withTaskGroup(of: PipelineEvent?.self) { group in
-            group.addTask {
-                for await event in events where predicate(event) { return event }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+        guard let (event, next) = await recorder.first(after: cursor.value, timeout: timeout, where: predicate) else {
+            return nil
         }
+        cursor.value = next
+        return event
     }
 
-    func waitForCompletion(timeout: Duration = .seconds(30)) async -> Bool {
-        await waitForEvent(timeout: timeout) { event in
-            if case .jobUpdated(let snapshot) = event, snapshot.stage == .completed { return true }
+    /// Read position into the recorder, advanced by each successful wait.
+    private final class Cursor: @unchecked Sendable { var value = 0 }
+    private let cursor = Cursor()
+
+    func waitForStage(_ stage: JobStage, timeout: Duration = .seconds(30)) async -> JobSnapshot? {
+        let event = await waitForEvent(timeout: timeout) { event in
+            if case .jobUpdated(let snapshot) = event, snapshot.stage == stage { return true }
             return false
-        } != nil
+        }
+        if case .jobUpdated(let snapshot)? = event { return snapshot }
+        return nil
     }
 
-    /// Counts distinct jobs reaching `.completed` until `count` is seen.
-    func waitForCompletions(count: Int, timeout: Duration = .seconds(60)) async -> Int {
-        let events = coordinator.events
-        return await withTaskGroup(of: Int.self) { group in
-            group.addTask {
-                var done = Set<JobID>()
-                for await event in events {
-                    if case .jobUpdated(let snapshot) = event, snapshot.stage == .completed {
-                        done.insert(snapshot.id)
-                        if done.count >= count { return done.count }
-                    }
-                }
-                return done.count
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return -1
-            }
-            let first = await group.next() ?? 0
-            group.cancelAll()
-            return first
+    func waitForCompletion(timeout: Duration = .seconds(30)) async -> JobSnapshot? {
+        await waitForStage(.completed, timeout: timeout)
+    }
+
+    func waitForFailure(timeout: Duration = .seconds(30)) async -> String? {
+        let event = await waitForEvent(timeout: timeout) { event in
+            if case .jobUpdated(let snapshot) = event, case .failed = snapshot.stage { return true }
+            return false
         }
+        if case .jobUpdated(let snapshot)? = event, case .failed(let message) = snapshot.stage { return message }
+        return nil
+    }
+
+    /// Waits until `count` distinct jobs have completed.
+    func waitForCompletions(count: Int, timeout: Duration = .seconds(60)) async -> Int {
+        var done = Set<JobID>()
+        let deadline = ContinuousClock.now + timeout
+        while done.count < count {
+            let remaining = deadline - ContinuousClock.now
+            guard remaining > .zero, let snapshot = await waitForCompletion(timeout: remaining) else { break }
+            done.insert(snapshot.id)
+        }
+        return done.count
+    }
+
+    func waitForReleaseChoice() async -> JobID? {
+        let event = await waitForEvent { event in
+            if case .releaseChoiceNeeded = event { return true }
+            return false
+        }
+        if case .releaseChoiceNeeded(let jobID)? = event { return jobID }
+        return nil
     }
 }
 
@@ -233,10 +310,12 @@ private struct PipelineHarness {
         let harness = try PipelineHarness(releases: mockReleases(count: 1))
         defer { harness.tearDown() }
 
-        await harness.coordinator.start()
+        await harness.start()
         harness.drive.insert("mockdisk")
 
-        #expect(await harness.waitForCompletion(), "job reaches completed")
+        let completed = await harness.waitForCompletion()
+        #expect(completed != nil, "job reaches completed")
+        #expect(completed?.tracks.allSatisfy { $0.status == .transferred } == true, "every track reached the destination")
 
         let albumDir = harness.library.appendingPathComponent("Pipeline Artist/Pipeline Album 1 (2001)")
         #expect(FileManager.default.fileExists(atPath: albumDir.appendingPathComponent("01 - Opening.flac").path))
@@ -262,20 +341,16 @@ private struct PipelineHarness {
         let harness = try PipelineHarness(releases: mockReleases(count: 3), autoPick: false)
         defer { harness.tearDown() }
 
-        await harness.coordinator.start()
+        await harness.start()
         harness.drive.insert("mockdisk")
 
-        let choiceEvent = await harness.waitForEvent { event in
-            if case .releaseChoiceNeeded = event { return true }
-            return false
-        }
-        guard case .releaseChoiceNeeded(let jobID)? = choiceEvent else {
+        guard let jobID = await harness.waitForReleaseChoice() else {
             Issue.record("picker was not requested for ambiguous matches")
             return
         }
 
         await harness.coordinator.chooseRelease(jobID: jobID, candidateID: "REL-2")
-        #expect(await harness.waitForCompletion(), "job completes after user choice")
+        #expect(await harness.waitForCompletion() != nil, "job completes after user choice")
         #expect(
             FileManager.default.fileExists(
                 atPath: harness.library
@@ -292,23 +367,16 @@ private struct PipelineHarness {
         let harness = try PipelineHarness(releases: mockReleases(count: 3), autoPick: false, art: mockArt)
         defer { harness.tearDown() }
 
-        await harness.coordinator.start()
+        await harness.start()
         harness.drive.insert("mockdisk")
 
         // Make sure BOTH stages are parked at the gate before answering:
         // the picker request (identify) and the rip finishing (processing).
-        guard case .releaseChoiceNeeded(let jobID)? = await harness.waitForEvent(until: { event in
-            if case .releaseChoiceNeeded = event { return true }
-            return false
-        }) else {
+        guard let jobID = await harness.waitForReleaseChoice() else {
             Issue.record("picker was not requested")
             return
         }
-        let parked = await harness.waitForEvent { event in
-            if case .jobUpdated(let snapshot) = event, snapshot.stage == .awaitingMetadata { return true }
-            return false
-        }
-        #expect(parked != nil, "rip finished and the job waits for metadata")
+        #expect(await harness.waitForStage(.awaitingMetadata) != nil, "rip finished and the job waits for metadata")
 
         await harness.coordinator.chooseRelease(jobID: jobID, candidateID: "REL-2")
 
@@ -317,7 +385,7 @@ private struct PipelineHarness {
             return false
         }
         #expect(artEvent != nil, "cover art is fetched for the chosen release")
-        #expect(await harness.waitForCompletion(), "and the job still completes")
+        #expect(await harness.waitForCompletion() != nil, "and the job still completes")
     }
 
     /// Regression (the other order): when the lookup is slower than the
@@ -329,18 +397,15 @@ private struct PipelineHarness {
         )
         defer { harness.tearDown() }
 
-        await harness.coordinator.start()
+        await harness.start()
         harness.drive.insert("mockdisk")
 
-        guard case .releaseChoiceNeeded(let jobID)? = await harness.waitForEvent(until: { event in
-            if case .releaseChoiceNeeded = event { return true }
-            return false
-        }) else {
+        guard let jobID = await harness.waitForReleaseChoice() else {
             Issue.record("picker was not requested")
             return
         }
         await harness.coordinator.chooseRelease(jobID: jobID, candidateID: "REL-1")
-        #expect(await harness.waitForCompletion(timeout: .seconds(15)), "job completes after the late choice")
+        #expect(await harness.waitForCompletion(timeout: .seconds(15)) != nil, "job completes after the late choice")
     }
 
     /// A lone *fuzzy* (TOC search) hit is only a guess: with auto-pick off it
@@ -349,32 +414,42 @@ private struct PipelineHarness {
         let harness = try PipelineHarness(releases: mockReleases(count: 1), autoPick: false, fuzzy: true)
         defer { harness.tearDown() }
 
-        await harness.coordinator.start()
+        await harness.start()
         harness.drive.insert("mockdisk")
 
-        let event = await harness.waitForEvent { event in
-            if case .releaseChoiceNeeded = event { return true }
-            return false
+        #expect(await harness.waitForReleaseChoice() != nil, "fuzzy single match asks the user when auto-pick is off")
+    }
+
+    @Test func decliningThePickerTagsFromTheDisc() async throws {
+        let harness = try PipelineHarness(releases: mockReleases(count: 3), autoPick: false)
+        defer { harness.tearDown() }
+
+        await harness.start()
+        harness.drive.insert("mockdisk")
+
+        guard let jobID = await harness.waitForReleaseChoice() else {
+            Issue.record("picker was not requested")
+            return
         }
-        #expect(event != nil, "fuzzy single match asks the user when auto-pick is off")
+        await harness.coordinator.declineReleaseChoice(jobID: jobID)
+        let completed = await harness.waitForCompletion()
+        #expect(completed?.album?.albumArtist == ResolvedAlbum.unknownArtist)
+        let contents = (try? FileManager.default.subpathsOfDirectory(atPath: harness.library.path)) ?? []
+        #expect(contents.contains { $0.hasSuffix(".flac") && $0.contains("Unknown Album") })
     }
 
     @Test func newDiscDuringUploadIsPickedUp() async throws {
         let harness = try PipelineHarness(releases: mockReleases(count: 1))
         defer { harness.tearDown() }
 
-        await harness.coordinator.start()
+        await harness.start()
         harness.drive.insert("mockdisk")
 
         // Wait until the first disc is uploading: with eject-after-rip it has
         // already left the drive, yet its job is still non-terminal. That is
         // the exact window where a freshly inserted disc on the same bsdName
         // used to be silently dropped by the dedup guard.
-        let uploading = await harness.waitForEvent { event in
-            if case .jobUpdated(let snapshot) = event, snapshot.stage == .transferring { return true }
-            return false
-        }
-        #expect(uploading != nil, "first disc reaches the transfer stage")
+        #expect(await harness.waitForStage(.transferring) != nil, "first disc reaches the transfer stage")
 
         // Insert a new disc into the same drive (same bsdName) mid-upload.
         harness.drive.insert("mockdisk")
@@ -388,10 +463,10 @@ private struct PipelineHarness {
         let harness = try PipelineHarness(releases: [])
         defer { harness.tearDown() }
 
-        await harness.coordinator.start()
+        await harness.start()
         harness.drive.insert("mockdisk")
 
-        #expect(await harness.waitForCompletion(), "job completes without metadata")
+        #expect(await harness.waitForCompletion() != nil, "job completes without metadata")
         let contents = (try? FileManager.default.subpathsOfDirectory(atPath: harness.library.path)) ?? []
         #expect(
             contents.contains { $0.hasSuffix(".flac") && $0.contains("Unknown Album") },
@@ -403,7 +478,7 @@ private struct PipelineHarness {
         let harness = try PipelineHarness(releases: [], unmatchedDiscPolicy: .askForTags)
         defer { harness.tearDown() }
 
-        await harness.coordinator.start()
+        await harness.start()
         harness.drive.insert("mockdisk")
 
         let event = await harness.waitForEvent { event in
@@ -427,7 +502,7 @@ private struct PipelineHarness {
         for index in album.tracks.indices { album.tracks[index].artist = "Hand Artist" }
         await harness.coordinator.provideTags(jobID: jobID, album: album)
 
-        #expect(await harness.waitForCompletion(), "job completes after manual tags")
+        #expect(await harness.waitForCompletion() != nil, "job completes after manual tags")
         #expect(
             FileManager.default.fileExists(
                 atPath: harness.library
@@ -435,5 +510,70 @@ private struct PipelineHarness {
             ),
             "hand-edited tags drive the file names"
         )
+    }
+
+    /// Regression: the transferred status used to be inferred from a "%02d"
+    /// file-name prefix, which multi-disc names ("2-01 - …") don't have.
+    @Test func multiDiscTracksReachTransferred() async throws {
+        let harness = try PipelineHarness(releases: mockReleases(count: 1, discs: 2))
+        defer { harness.tearDown() }
+
+        await harness.start()
+        harness.drive.insert("mockdisk")
+
+        let completed = await harness.waitForCompletion()
+        #expect(completed?.album?.discNumber == 2 && completed?.album?.discTotal == 2, "our disc is medium 2 of 2")
+        #expect(completed?.tracks.map(\.status) == [.transferred, .transferred])
+        #expect(
+            FileManager.default.fileExists(
+                atPath: harness.library.appendingPathComponent("Pipeline Artist/Pipeline Album 1 (2001)/2-01 - Opening.flac").path
+            )
+        )
+    }
+
+    @Test func unreadableDeviceFailsTheJobAndFreesTheDrive() async throws {
+        let harness = try PipelineHarness(releases: mockReleases(count: 1), deviceFails: true)
+        defer { harness.tearDown() }
+
+        await harness.start()
+        harness.drive.insert("mockdisk")
+
+        let message = await harness.waitForFailure()
+        #expect(message?.contains("DeviceUnavailable") == true)
+        let history = await harness.coordinator.history()
+        #expect(history.first?.succeeded == false)
+        #expect(harness.drive.ejectedDiscs.isEmpty, "nothing to eject")
+    }
+
+    @Test func missingDestinationFailsAfterEncoding() async throws {
+        let harness = try PipelineHarness(releases: mockReleases(count: 1), destination: false)
+        defer { harness.tearDown() }
+
+        await harness.start()
+        harness.drive.insert("mockdisk")
+
+        #expect(await harness.waitForStage(.encoding) != nil, "the rip and encode still happen")
+        let message = await harness.waitForFailure()
+        #expect(message?.contains("No destination") == true)
+    }
+
+    /// Preferences are frozen per job: flipping the eject timing while a
+    /// disc is in flight must not leave it stuck in the drive.
+    @Test func ejectTimingIsSnapshottedPerJob() async throws {
+        let harness = try PipelineHarness(releases: mockReleases(count: 1), ejectTiming: .afterEverything)
+        defer { harness.tearDown() }
+
+        await harness.start()
+        harness.drive.insert("mockdisk")
+
+        #expect(await harness.waitForStage(.ripping) != nil)
+        var flipped = Preferences()
+        flipped.destination = .localFolder(path: harness.library.path)
+        flipped.ripMode = .fast
+        flipped.ejectTiming = .afterRip
+        await harness.coordinator.updatePreferences(flipped)
+
+        #expect(await harness.waitForCompletion() != nil)
+        #expect(harness.drive.ejectedDiscs == ["mockdisk"], "ejected exactly once, at the end, as the job's own timing said")
     }
 }
