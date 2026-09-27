@@ -1,7 +1,7 @@
 import Foundation
 
 /// The canonical tagging input: one chosen release applied to one disc.
-public struct ResolvedAlbum: Sendable, Hashable, Codable {
+public struct ResolvedAlbum: Sendable, Equatable {
     public var album: String
     public var albumArtist: String
     public var albumArtistSort: String?
@@ -84,7 +84,7 @@ public struct ResolvedAlbum: Sendable, Hashable, Codable {
     }
 }
 
-public struct ResolvedTrack: Sendable, Hashable, Codable {
+public struct ResolvedTrack: Sendable, Equatable {
     public var position: Int
     public var title: String
     public var artist: String
@@ -135,7 +135,8 @@ extension ResolvedAlbum {
                 artist: trackCredit.isEmpty ? albumArtist : trackCredit.joinedName,
                 artistMBIDs: trackCredit.map(\.artist.id),
                 recordingMBID: track.recording?.id,
-                trackMBID: track.id
+                trackMBID: track.id,
+                isrc: track.recording?.isrcs?.first
             )
         }
 

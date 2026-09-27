@@ -64,7 +64,7 @@ public actor CDDrive: CDDeviceIO {
         guard code == 0 else {
             throw DiscDriveError.ioctlFailed(name: "DKIOCCDREAD(lba \(range.lowerBound)..<\(range.upperBound))", code: code)
         }
-        return SectorBuffer(startLBA: range.lowerBound, sectorCount: range.count, areas: areas, data: buffer)
+        return SectorBuffer(sectorCount: range.count, areas: areas, data: buffer)
     }
 
     public func readFullTOC() throws -> Data {

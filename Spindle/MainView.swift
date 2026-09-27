@@ -236,7 +236,7 @@ struct StatusBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if model.isBusy {
+            if model.hasActiveJobs {
                 ProgressView()
                     .controlSize(.small)
                     .scaleEffect(0.8)

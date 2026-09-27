@@ -1,6 +1,6 @@
 import AVFoundation
 import CryptoKit
-import Encoding
+@testable import Encoding
 import Foundation
 import Metadata
 import Naming

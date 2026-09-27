@@ -54,7 +54,7 @@ public struct DiscRipper: Sendable {
     /// transfer with garbage. C2 is trusted only if the audio portion of a
     /// C2 read is byte-identical to a plain read of the same sectors and
     /// the error flags aren't lighting up wall-to-wall on a readable area.
-    public func probeC2(firstAudioLBA: Int) async -> Bool {
+    func probeC2(firstAudioLBA: Int) async -> Bool {
         let count = 32
         let range = firstAudioLBA ..< firstAudioLBA + count
         guard let plain = try? await device.readSectors(range, areas: .user),
@@ -79,14 +79,6 @@ public struct DiscRipper: Sendable {
         public let c2Distrusted: Bool
         /// Tracks abandoned because they exceeded the per-track time budget.
         public let failedTracks: [Int]
-    }
-
-    public func rip(
-        toc: TOC,
-        to stagingDirectory: URL,
-        progress: @Sendable @escaping (RipProgress) -> Void = { _ in }
-    ) async throws -> [RippedTrack] {
-        try await ripDisc(toc: toc, to: stagingDirectory, progress: progress).tracks
     }
 
     /// Rips the disc's audio tracks; `only` restricts to a subset (used for

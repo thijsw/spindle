@@ -22,7 +22,7 @@ public struct ReleaseScorer: Sendable {
 
     public struct Ranked: Sendable {
         public let release: MBRelease
-        public let score: Double
+        let score: Double
         /// 0...1; how confidently the top result can be auto-picked.
         public let confidence: Double
     }

@@ -9,7 +9,8 @@ let package = Package(
         .library(name: "SpindleCore", targets: ["SpindleCore"]),
     ],
     dependencies: [
-        // MIT-licensed pure-Swift SSH/SFTP (the project's only third-party dependency).
+        // MIT-licensed pure-Swift SSH/SFTP, the package's only third-party
+        // dependency (the app target adds Sparkle for updates).
         .package(url: "https://github.com/orlandos-nl/Citadel.git", from: "0.12.1"),
     ],
     targets: [

@@ -5,7 +5,7 @@ import IOKit.pwr_mgt
 @MainActor
 final class PowerAssertion {
     private var assertionID: IOPMAssertionID = 0
-    private(set) var isActive = false
+    private var isActive = false
 
     func activate() {
         guard !isActive else { return }

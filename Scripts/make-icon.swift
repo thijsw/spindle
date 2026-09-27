@@ -1,15 +1,20 @@
 #!/usr/bin/env swift
 // Renders the Spindle app icon (a CD on a squircle) into Spindle.iconset/
 // and compiles it to Spindle.icns with iconutil.
-// Usage: swift Scripts/make-icon.swift <output-directory>
+// Usage: swift Scripts/make-icon.swift [output-directory]   (default: Spindle/)
 
 import AppKit
 
 let outputDir = CommandLine.arguments.count > 1
     ? URL(fileURLWithPath: CommandLine.arguments[1])
-    : URL(fileURLWithPath: "Resources")
+    : URL(fileURLWithPath: "Spindle")
 let iconsetURL = outputDir.appendingPathComponent("Spindle.iconset")
-try? FileManager.default.createDirectory(at: iconsetURL, withIntermediateDirectories: true)
+do {
+    try FileManager.default.createDirectory(at: iconsetURL, withIntermediateDirectories: true)
+} catch {
+    FileHandle.standardError.write(Data("cannot create \(iconsetURL.path): \(error)\n".utf8))
+    exit(1)
+}
 
 func draw(size: CGFloat) -> NSImage {
     let image = NSImage(size: NSSize(width: size, height: size))
@@ -118,7 +123,15 @@ func writePNG(_ image: NSImage, to url: URL, pixels: Int) {
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     image.draw(in: NSRect(x: 0, y: 0, width: pixels, height: pixels))
     NSGraphicsContext.restoreGraphicsState()
-    try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    do {
+        guard let png = rep.representation(using: .png, properties: [:]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try png.write(to: url)
+    } catch {
+        FileHandle.standardError.write(Data("cannot write \(url.path): \(error)\n".utf8))
+        exit(1)
+    }
 }
 
 for (name, pixels) in [
@@ -137,4 +150,8 @@ task.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
 task.arguments = ["-c", "icns", iconsetURL.path, "-o", outputDir.appendingPathComponent("Spindle.icns").path]
 try task.run()
 task.waitUntilExit()
-print(task.terminationStatus == 0 ? "Wrote \(outputDir.path)/Spindle.icns" : "iconutil failed")
+guard task.terminationStatus == 0 else {
+    FileHandle.standardError.write(Data("iconutil failed (status \(task.terminationStatus))\n".utf8))
+    exit(Int32(task.terminationStatus))
+}
+print("Wrote \(outputDir.path)/Spindle.icns")

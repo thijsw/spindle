@@ -3,6 +3,7 @@ import Foundation
 import Metadata
 import RipEngine
 import SpindleCore
+import os
 
 // Shared plumbing for the subcommands in main.swift.
 
@@ -90,22 +91,22 @@ func wavFiles(in directory: String, prefix: String = "track") -> [URL] {
 }
 
 /// Serializes one-line progress output from the rip callback.
-final class ProgressPrinter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lastLine = ""
+final class ProgressPrinter: Sendable {
+    private let lastLine = OSAllocatedUnfairLock(initialState: "")
 
     func print(_ progress: RipProgress) {
-        lock.lock()
-        defer { lock.unlock() }
         let line = String(
             format: "\rtrack %02d  %3d%%%@",
             progress.trackNumber,
             Int(progress.fraction * 100),
             progress.rereads > 0 ? "  (\(progress.rereads) re-reads)" : ""
         )
-        guard line != lastLine else { return }
-        lastLine = line
-        FileHandle.standardOutput.write(Data(line.utf8))
+        let changed = lastLine.withLock { last -> Bool in
+            guard line != last else { return false }
+            last = line
+            return true
+        }
+        if changed { FileHandle.standardOutput.write(Data(line.utf8)) }
     }
 }
 
@@ -114,9 +115,3 @@ func formatMSF(_ sectors: Int) -> String {
     return String(format: "%02d:%02d.%02d", s / (60 * 75), (s / 75) % 60, s % 75)
 }
 
-extension Duration {
-    /// Whole duration in seconds, for rate math.
-    var seconds: Double {
-        Double(components.seconds) + Double(components.attoseconds) / 1e18
-    }
-}

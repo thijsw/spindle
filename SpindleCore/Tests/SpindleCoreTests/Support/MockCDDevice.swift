@@ -6,8 +6,6 @@ import Foundation
 /// disc can be predicted independently. Sectors can be made flaky (different
 /// garbage on the first N reads) with or without C2 flagging.
 actor MockCDDevice: CDDeviceIO {
-    let bsdName = "mockdisk"
-
     struct FlakySector {
         var badReads: Int // number of reads that return garbage before settling
         var flagsC2: Bool // whether the garbage reads carry C2 error bits
@@ -106,7 +104,7 @@ actor MockCDDevice: CDDeviceIO {
                 data.append(Data(count: SectorAreas.subQBytesPerSector))
             }
         }
-        return SectorBuffer(startLBA: range.lowerBound, sectorCount: range.count, areas: areas, data: data)
+        return SectorBuffer(sectorCount: range.count, areas: areas, data: data)
     }
 
     func readFullTOC() throws -> Data { tocData }

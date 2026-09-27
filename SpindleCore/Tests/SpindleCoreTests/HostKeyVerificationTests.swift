@@ -3,6 +3,7 @@ import NIOCore
 import NIOEmbedded
 import NIOSSH
 import Testing
+import os
 
 @testable import Transfer
 
@@ -10,25 +11,21 @@ private let keyAlpha = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDTeSEMdPi1OnHj3rKSZ
 private let keyBravo = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO+L+pAqi2Z5zX73OBCWhALVS0dwsc9OMcs4sYdyxYTe spindle-test-2"
 
 /// In-memory pin store so tests never touch the real Keychain.
-private final class MemoryHostKeyStore: HostKeyStore, @unchecked Sendable {
-    private let lock = NSLock()
-    private var pins: [String: String] = [:]
+private final class MemoryHostKeyStore: HostKeyStore, Sendable {
+    private let pins = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
     private func key(_ host: String, _ port: Int) -> String { "\(host):\(port)" }
 
     func pinnedFingerprint(host: String, port: Int) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return pins[key(host, port)]
+        pins.withLock { $0[key(host, port)] }
     }
 
     func pin(fingerprint: String, host: String, port: Int) {
-        lock.lock(); defer { lock.unlock() }
-        pins[key(host, port)] = fingerprint
+        pins.withLock { $0[key(host, port)] = fingerprint }
     }
 
     func removePin(host: String, port: Int) {
-        lock.lock(); defer { lock.unlock() }
-        pins[key(host, port)] = nil
+        pins.withLock { $0[key(host, port)] = nil }
     }
 }
 

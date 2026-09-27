@@ -2,7 +2,7 @@ import DiscRecording
 import Foundation
 
 /// Album/track strings read from a disc's CD-TEXT, when present.
-public struct CDTextInfo: Sendable, Hashable, Codable {
+public struct CDTextInfo: Sendable, Equatable {
     public var albumTitle: String?
     public var albumPerformer: String?
     /// Keyed by track number (1-based).

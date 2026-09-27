@@ -66,7 +66,7 @@ public struct TrackChecksums: Sendable, Hashable, Codable {
 }
 
 /// CRC32 over only the bytes inside `coveredBytes` of a longer stream.
-public struct RangeGatedCRC32: Sendable {
+struct RangeGatedCRC32: Sendable {
     private var crc = CRC32()
     private var position = 0
     private let coveredBytes: Range<Int>

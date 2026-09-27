@@ -22,7 +22,7 @@ import Testing
         #expect(toc.tracks[2].hasPreEmphasis)
         #expect(toc.lengthInSectors(of: toc.tracks[0]) == 5000)
         #expect(toc.lengthInSectors(of: toc.tracks[2]) == 5000)
-        #expect(toc.totalAudioSectors == 15000)
+        #expect(toc.audioTracks.map(toc.lengthInSectors(of:)).reduce(0, +) == 15000)
     }
 
     @Test func marksDataTracksFromControlBits() throws {

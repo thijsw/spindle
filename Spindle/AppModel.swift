@@ -33,7 +33,6 @@ final class AppModel {
         }
         if summary != menuBarSummary { menuBarSummary = summary }
     }
-    private(set) var history: [JobRecord] = []
     private(set) var startupError: String?
 
     /// Preferences live in their own observable so the Settings window never
@@ -54,7 +53,6 @@ final class AppModel {
     private(set) var jobsNeedingTags: Set<JobID> = []
 
     private var coordinator: PipelineCoordinator?
-    private var jobStore: JobStore?
     private let powerAssertion = PowerAssertion()
 
     init() {
@@ -72,11 +70,6 @@ final class AppModel {
     /// The job the main window focuses on: the most recent non-terminal one.
     var activeJob: JobSnapshot? {
         jobs.last { !$0.stage.isTerminal }
-    }
-
-    /// Jobs still working off the rip lane (encoding/transferring).
-    var backgroundJobs: [JobSnapshot] {
-        jobs.filter { !$0.stage.isTerminal && $0.id != activeJob?.id }
     }
 
     var pickerJob: JobSnapshot? {
@@ -108,13 +101,12 @@ final class AppModel {
         if let job = active.first(where: { $0.stage == .encoding }) {
             return "Encoding \(title(job))"
         }
-        if let job = activeJob {
-            if job.stage == .ripping, let detail = rippingTrackDetail(job) {
-                return "Ripping \(title(job)) — \(detail)"
-            }
-            return "\(job.stage.label) — \(title(job))"
+        // `active` is non-empty, so there is always a most recent active job.
+        let job = activeJob ?? active[0]
+        if job.stage == .ripping, let detail = rippingTrackDetail(job) {
+            return "Ripping \(title(job)) — \(detail)"
         }
-        return active[0].stage.label
+        return "\(job.stage.label) — \(title(job))"
     }
 
     /// "track N of M" for the track currently being read, or nil.
@@ -137,26 +129,20 @@ final class AppModel {
         return transferFraction[job.id]
     }
 
-    /// Whether to show activity (spinner / bar) in the status area.
-    var isBusy: Bool { hasActiveJobs }
-
     func start() {
         guard coordinator == nil else { return }
         AppDelegate.hasActiveWork = { [weak self] in self?.hasActiveJobs ?? false }
         cleanUpStaleStaging()
         do {
-            let store = JobStore()
             let coordinator = PipelineCoordinator(
                 preferences: preferences,
                 dependencies: try .live(userAgent: Spindle.userAgent),
-                jobStore: store
+                jobStore: JobStore()
             )
             self.coordinator = coordinator
-            self.jobStore = store
 
             Task { [weak self] in
                 await coordinator.start()
-                await self?.refreshHistory()
                 for await event in coordinator.events {
                     self?.handle(event)
                 }
@@ -184,7 +170,6 @@ final class AppModel {
                 transferFraction[snapshot.id] = nil
                 transferRate[snapshot.id] = nil
                 coverArt[snapshot.id] = nil
-                Task { await self.refreshHistory() }
             }
             refreshMenuBarSummary()
             // Keep the Mac awake while any disc is in flight.
@@ -307,11 +292,6 @@ final class AppModel {
             return nil
         }
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-    }
-
-    private func refreshHistory() async {
-        guard let jobStore else { return }
-        history = await jobStore.history()
     }
 
     // MARK: Notifications (only available inside a real .app bundle)

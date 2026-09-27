@@ -5,16 +5,11 @@ import Security
 public enum KeychainStore {
     static let service = "nl.huell.spindle.sftp"
 
-    public enum KeychainError: Error, CustomStringConvertible {
-        case status(OSStatus)
+    public struct KeychainError: Error, CustomStringConvertible, Sendable {
+        public let status: OSStatus
 
         public var description: String {
             "Keychain error \(status)" + (SecCopyErrorMessageString(status, nil).map { ": \($0)" } ?? "")
-        }
-
-        var status: OSStatus {
-            if case .status(let s) = self { return s }
-            return errSecSuccess
         }
     }
 
@@ -33,7 +28,7 @@ public enum KeychainStore {
             add[kSecValueData as String] = data
             status = SecItemAdd(add as CFDictionary, nil)
         }
-        guard status == errSecSuccess else { throw KeychainError.status(status) }
+        guard status == errSecSuccess else { throw KeychainError(status: status) }
     }
 
     public static func load(account: String) -> String? {

@@ -5,22 +5,22 @@ import ImageIO
 /// write Vorbis comments or pictures, so Spindle rewrites the header chain
 /// (STREAMINFO with a patched PCM MD5, VORBIS_COMMENT, PICTURE, PADDING) and
 /// streams the audio frames through untouched.
-public enum FLACMetadata {
+enum FLACMetadata {
     static let magic = Data("fLaC".utf8)
 
-    public struct Block: Sendable {
-        public let type: UInt8 // 0 STREAMINFO, 1 PADDING, 4 VORBIS_COMMENT, 6 PICTURE
-        public let data: Data
+    struct Block: Sendable {
+        let type: UInt8 // 0 STREAMINFO, 1 PADDING, 4 VORBIS_COMMENT, 6 PICTURE
+        let data: Data
     }
 
-    public struct ParsedFile: Sendable {
-        public let blocks: [Block]
+    struct ParsedFile: Sendable {
+        let blocks: [Block]
         /// Offset of the first audio frame in the file.
-        public let framesOffset: Int
+        let framesOffset: Int
 
-        public var streamInfo: Data? { blocks.first { $0.type == 0 }?.data }
+        var streamInfo: Data? { blocks.first { $0.type == 0 }?.data }
 
-        public var vendorString: String? {
+        var vendorString: String? {
             guard let comment = blocks.first(where: { $0.type == 4 })?.data,
                   comment.count >= 4
             else { return nil }
@@ -30,7 +30,7 @@ public enum FLACMetadata {
         }
 
         /// All KEY=value comments, uppercased keys.
-        public var comments: [(String, String)] {
+        var comments: [(String, String)] {
             guard let data = blocks.first(where: { $0.type == 4 })?.data, data.count >= 8 else { return [] }
             var offset = 4 + Int(data.readLEUInt32(at: 0))
             guard data.count >= offset + 4 else { return [] }
@@ -51,7 +51,7 @@ public enum FLACMetadata {
             return result
         }
 
-        public var pictureData: Data? {
+        var pictureData: Data? {
             guard let pic = blocks.first(where: { $0.type == 6 })?.data, pic.count > 32 else { return nil }
             var offset = 4
             let mimeLength = Int(pic.readBEUInt32(at: offset)); offset += 4 + mimeLength
@@ -64,7 +64,7 @@ public enum FLACMetadata {
         }
     }
 
-    public static func parse(fileURL: URL) throws -> ParsedFile {
+    static func parse(fileURL: URL) throws -> ParsedFile {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
             throw EncodingError.unreadableInput(fileURL, "cannot open")
         }
@@ -99,7 +99,7 @@ public enum FLACMetadata {
 
     /// Rewrites `fileURL` in place (via a temporary sibling) with the given
     /// metadata. Audio frames are stream-copied.
-    public static func rewrite(
+    static func rewrite(
         fileURL: URL,
         vorbisComments: [(String, String)],
         picture: (data: Data, mimeType: String)?,

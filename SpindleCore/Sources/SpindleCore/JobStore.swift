@@ -26,11 +26,6 @@ public actor JobStore {
         Array(records.suffix(limit).reversed())
     }
 
-    public func clear() {
-        records.removeAll()
-        persist()
-    }
-
     private func persist() {
         try? FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true

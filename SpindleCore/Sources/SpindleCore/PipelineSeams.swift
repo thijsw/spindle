@@ -33,28 +33,28 @@ public protocol DriveControlling: Sendable {
 }
 
 /// Production drive controller backed by DiskArbitration + IOKit.
-public final class SystemDriveController: DriveControlling, @unchecked Sendable {
+final class SystemDriveController: DriveControlling, Sendable {
     private let monitor: DriveMonitor
 
-    public init() throws {
+    init() throws {
         self.monitor = try DriveMonitor()
     }
 
-    public var driveEvents: AsyncStream<DriveEvent> { monitor.events }
+    var driveEvents: AsyncStream<DriveEvent> { monitor.events }
 
-    public func presentDiscs() -> [String] {
+    func presentDiscs() -> [String] {
         DiscEnumerator.presentCDMedia()
     }
 
-    public func hold(bsdName: String) async throws {
+    func hold(bsdName: String) async throws {
         try await monitor.hold(bsdName: bsdName)
     }
 
-    public func release(bsdName: String) {
+    func release(bsdName: String) {
         monitor.release(bsdName: bsdName)
     }
 
-    public func eject(bsdName: String) async throws {
+    func eject(bsdName: String) async throws {
         try await monitor.eject(bsdName: bsdName)
     }
 }
@@ -62,7 +62,7 @@ public final class SystemDriveController: DriveControlling, @unchecked Sendable 
 /// Small counting semaphore for bounding encode/transfer concurrency.
 /// `signal()` is synchronous so a `defer` can release the slot without an
 /// extra task hop.
-public final class AsyncSemaphore: Sendable {
+final class AsyncSemaphore: Sendable {
     private struct State {
         var available: Int
         var waiters: [CheckedContinuation<Void, Never>] = []
@@ -70,11 +70,11 @@ public final class AsyncSemaphore: Sendable {
 
     private let state: OSAllocatedUnfairLock<State>
 
-    public init(value: Int) {
+    init(value: Int) {
         self.state = OSAllocatedUnfairLock(initialState: State(available: value))
     }
 
-    public func wait() async {
+    func wait() async {
         let acquired = state.withLock { state -> Bool in
             guard state.available > 0 else { return false }
             state.available -= 1
@@ -95,7 +95,7 @@ public final class AsyncSemaphore: Sendable {
         }
     }
 
-    public func signal() {
+    func signal() {
         let next = state.withLock { state -> CheckedContinuation<Void, Never>? in
             guard !state.waiters.isEmpty else {
                 state.available += 1

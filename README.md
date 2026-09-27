@@ -82,8 +82,9 @@ Scripts/make-app.sh release             # universal Release build
 
 ```sh
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" Scripts/make-app.sh release
-Scripts/notarize.sh             # needs a notarytool keychain profile
+Scripts/notarize.sh dist/Spindle.app   # needs a notarytool keychain profile
 Scripts/make-dmg.sh
+Scripts/notarize.sh dist/Spindle.dmg   # the disk image is notarized and stapled too
 ```
 
 ## Development CLI
@@ -93,6 +94,7 @@ Every subsystem is exercisable headless via `spindle-cli` (run from
 
 ```sh
 swift run spindle-cli detect            # watch disc insertions
+swift run spindle-cli drives            # present media and drive identity/offset hint
 swift run spindle-cli toc               # print the table of contents
 swift run spindle-cli discid            # MusicBrainz DiscID for the disc
 swift run spindle-cli identify --pick 1 # MusicBrainz lookup (+ --toc for discless testing)

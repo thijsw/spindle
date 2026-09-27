@@ -54,10 +54,6 @@ public struct TOC: Sendable, Hashable, Codable {
     public func sectorRange(of track: TOCTrack) -> Range<Int> {
         track.startLBA ..< track.startLBA + lengthInSectors(of: track)
     }
-
-    public var totalAudioSectors: Int {
-        audioTracks.map(lengthInSectors(of:)).reduce(0, +)
-    }
 }
 
 public enum TOCParseError: Error, CustomStringConvertible, Sendable {

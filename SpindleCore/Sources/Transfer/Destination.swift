@@ -3,10 +3,6 @@ import Foundation
 public struct TransferProgress: Sendable {
     public let bytesSent: Int64
     public let totalBytes: Int64
-
-    public var fraction: Double {
-        totalBytes > 0 ? Double(bytesSent) / Double(totalBytes) : 0
-    }
 }
 
 /// A place finished albums are delivered to.

@@ -122,10 +122,6 @@ public struct TrackRipper: Sendable {
                 return overlap.isEmpty ? nil : overlap
             }.sorted { $0.lowerBound < $1.lowerBound }
         }
-
-        public var totalBadSectors: Int {
-            runs.reduce(0) { $0 + $1.count }
-        }
     }
 
     public func rip(
@@ -628,9 +624,7 @@ public struct TrackRipper: Sendable {
     ) async throws -> ChunkResult {
         let areas: SectorAreas = [.user, .errorFlags]
         let resilient = try await resilientRead(sectors, areas: areas, health: health)
-        let buffer = SectorBuffer(
-            startLBA: sectors.lowerBound, sectorCount: sectors.count, areas: areas, data: resilient.data
-        )
+        let buffer = SectorBuffer(sectorCount: sectors.count, areas: areas, data: resilient.data)
 
         // Sanity-check the flag rate before acting on a single flag: an
         // implausible rate means the drive's C2 is lying, and settling

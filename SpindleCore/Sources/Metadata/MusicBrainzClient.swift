@@ -26,7 +26,7 @@ public enum DiscLookupResult: Sendable {
 /// MusicBrainz WS/2 client. An actor so the mandatory 1-request/second
 /// throttle is enforced across all callers.
 public actor MusicBrainzClient {
-    public static let includes = "recordings+artist-credits+release-groups+labels"
+    private static let includes = "recordings+artist-credits+release-groups+labels+isrcs"
 
     private let session: URLSession
     private let userAgent: String

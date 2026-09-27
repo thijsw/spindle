@@ -6,6 +6,7 @@ import RipEngine
 import Testing
 import Transfer
 import Verification
+import os
 
 // MARK: Mocks
 
@@ -18,17 +19,18 @@ private func makePipelineTOCData() -> Data {
     ])
 }
 
-private final class MockDriveController: DriveControlling, @unchecked Sendable {
+private final class MockDriveController: DriveControlling, Sendable {
+    private struct State {
+        var held: Set<String> = []
+        var ejected: [String] = []
+    }
+
     let driveEvents: AsyncStream<DriveEvent>
     private let continuation: AsyncStream<DriveEvent>.Continuation
-    private let lock = NSLock()
-    private var held: Set<String> = []
-    private var ejected: [String] = []
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     init() {
-        var continuation: AsyncStream<DriveEvent>.Continuation!
-        self.driveEvents = AsyncStream { continuation = $0 }
-        self.continuation = continuation
+        (driveEvents, continuation) = AsyncStream.makeStream(of: DriveEvent.self)
     }
 
     func insert(_ bsdName: String) {
@@ -38,19 +40,19 @@ private final class MockDriveController: DriveControlling, @unchecked Sendable {
     func presentDiscs() -> [String] { [] }
 
     func hold(bsdName: String) async throws {
-        lock.withLock { _ = held.insert(bsdName) }
+        state.withLock { _ = $0.held.insert(bsdName) }
     }
 
     func release(bsdName: String) {
-        lock.withLock { _ = held.remove(bsdName) }
+        state.withLock { _ = $0.held.remove(bsdName) }
     }
 
     func eject(bsdName: String) async throws {
-        lock.withLock { ejected.append(bsdName) }
+        state.withLock { $0.ejected.append(bsdName) }
     }
 
     var ejectedDiscs: [String] {
-        lock.withLock { ejected }
+        state.withLock { $0.ejected }
     }
 }
 

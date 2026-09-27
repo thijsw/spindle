@@ -29,13 +29,11 @@ public struct SectorAreas: OptionSet, Sendable, Hashable {
 
 /// Raw result of reading a contiguous range of CDDA sectors.
 public struct SectorBuffer: Sendable {
-    public let startLBA: Int
     public let sectorCount: Int
     public let areas: SectorAreas
     public let data: Data
 
-    public init(startLBA: Int, sectorCount: Int, areas: SectorAreas, data: Data) {
-        self.startLBA = startLBA
+    public init(sectorCount: Int, areas: SectorAreas, data: Data) {
         self.sectorCount = sectorCount
         self.areas = areas
         self.data = data
@@ -53,19 +51,10 @@ public struct SectorBuffer: Sendable {
     }
 
     /// C2 error bits for the given sector, or nil if not requested.
-    public func c2Flags(sector: Int) -> Data? {
+    func c2Flags(sector: Int) -> Data? {
         guard areas.contains(.errorFlags) else { return nil }
         let offset = areas.contains(.user) ? SectorAreas.audioBytesPerSector : 0
         return slice(of: sector, areaOffset: offset, length: SectorAreas.c2BytesPerSector)
-    }
-
-    /// Q subchannel bytes for the given sector, or nil if not requested.
-    public func subQ(sector: Int) -> Data? {
-        guard areas.contains(.subChannelQ) else { return nil }
-        var offset = 0
-        if areas.contains(.user) { offset += SectorAreas.audioBytesPerSector }
-        if areas.contains(.errorFlags) { offset += SectorAreas.c2BytesPerSector }
-        return slice(of: sector, areaOffset: offset, length: SectorAreas.subQBytesPerSector)
     }
 
     /// True if any C2 bit is set for the given sector (i.e. the drive flagged

@@ -1,6 +1,6 @@
 import DiscDrive
 import Foundation
-import RipEngine
+@testable import RipEngine
 import Testing
 import Verification
 

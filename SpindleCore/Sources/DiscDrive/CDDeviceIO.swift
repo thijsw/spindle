@@ -3,8 +3,6 @@ import Foundation
 /// Abstraction over a CD device. `CDDrive` is the real implementation; tests
 /// use mocks that replay captured sector dumps and inject errors.
 public protocol CDDeviceIO: Actor {
-    var bsdName: String { get }
-
     /// Reads a contiguous range of CDDA sectors (0-based LBA).
     func readSectors(_ range: Range<Int>, areas: SectorAreas) throws -> SectorBuffer
 

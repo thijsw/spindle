@@ -1,10 +1,9 @@
 import Foundation
 
 // Decodable models for the MusicBrainz WS/2 JSON responses we consume
-// (discid lookup with inc=recordings+artist-credits+release-groups+labels).
+// (discid lookup with inc=recordings+artist-credits+release-groups+labels+isrcs).
 
 public struct MBDiscIDResponse: Decodable, Sendable {
-    public let id: String?
     public let releases: [MBRelease]?
 }
 
@@ -30,12 +29,10 @@ public struct MBRelease: Decodable, Sendable, Identifiable {
 
 public struct MBReleaseGroup: Decodable, Sendable {
     public let id: String
-    public let primaryType: String?
     public let firstReleaseDate: String?
 
     enum CodingKeys: String, CodingKey {
         case id
-        case primaryType = "primary-type"
         case firstReleaseDate = "first-release-date"
     }
 }
@@ -68,20 +65,18 @@ public struct MBLabelInfo: Decodable, Sendable {
 }
 
 public struct MBLabel: Decodable, Sendable {
-    public let id: String?
     public let name: String?
 }
 
 public struct MBMedium: Decodable, Sendable {
     public let position: Int?
     public let format: String?
-    public let title: String?
     public let trackCount: Int?
     public let discs: [MBDiscRef]?
     public let tracks: [MBTrack]?
 
     enum CodingKeys: String, CodingKey {
-        case position, format, title, discs, tracks
+        case position, format, discs, tracks
         case trackCount = "track-count"
     }
 }
@@ -94,18 +89,18 @@ public struct MBTrack: Decodable, Sendable {
     public let id: String
     public let position: Int?
     public let title: String?
-    public let length: Int?
     public let recording: MBRecording?
 }
 
 public struct MBRecording: Decodable, Sendable {
     public let id: String
     public let title: String?
-    public let length: Int?
     public let artistCredit: [MBArtistCredit]?
+    /// Requires `inc=isrcs`; a recording can carry several.
+    public let isrcs: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, length
+        case id, title, isrcs
         case artistCredit = "artist-credit"
     }
 }

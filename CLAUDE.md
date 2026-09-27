@@ -124,6 +124,8 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
 - Xcode 26.3 is installed and licensed (since June 2026); no `DEVELOPER_DIR`
   workaround needed anymore.
 - `cd SpindleCore && swift build && swift test` — core + Swift Testing suite.
+  If the build fails on a precompiled header from another checkout path
+  (the repo was moved once), `rm -rf SpindleCore/.build` and retry.
 - `xcodebuild -project Spindle.xcodeproj -scheme Spindle build` — the app.
   The pbxproj is hand-authored (objectVersion 77, synchronized folder for
   `Spindle/`, local package ref to `SpindleCore`); edit it textually.
