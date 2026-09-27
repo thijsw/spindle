@@ -5,9 +5,7 @@ import RipEngine
 import SpindleCore
 import os
 
-// Shared plumbing for the subcommands in main.swift.
-
-let cliUserAgent = Spindle.userAgent
+// Shared plumbing for the commands under Commands/.
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -22,10 +20,20 @@ func resolveDisc(_ argument: String?) -> String {
     return first
 }
 
-func loadTOC(bsdName: String) async throws -> TOC {
+/// Opens the raw device and parses its table of contents.
+func openDisc(bsdName: String) async throws -> (drive: CDDrive, toc: TOC) {
     let drive = try CDDrive(bsdName: bsdName)
-    let raw = try await drive.readFullTOC()
-    return try TOC.parse(fullTOC: raw)
+    let toc = try TOC.parse(fullTOC: try await drive.readFullTOC())
+    return (drive, toc)
+}
+
+/// Cover art for an album, the same way the app fetches it.
+func fetchArt(for album: ResolvedAlbum) async -> CoverArt? {
+    await CoverArtClient(userAgent: Spindle.userAgent).fetchArt(
+        releaseMBID: album.releaseMBID,
+        releaseGroupMBID: album.releaseGroupMBID,
+        fallbackQuery: album.hasPlaceholderNames ? nil : "\(album.albumArtist) \(album.album)"
+    )
 }
 
 /// Walks a subcommand's argument list, replacing the hand-rolled index

@@ -77,6 +77,22 @@ public enum DestinationConfig: Sendable, Codable, Equatable {
     }
 }
 
+public extension DestinationConfig {
+    /// Parses a command-line destination: `sftp://user@host[:port]/remote/path`
+    /// (password authentication; adjust afterwards for a key file) or a local
+    /// folder path. Nil for an SFTP URL without a user or host.
+    static func parse(_ spec: String) -> DestinationConfig? {
+        guard spec.hasPrefix("sftp://") else { return .localFolder(path: spec) }
+        guard let url = URL(string: spec), let host = url.host, let user = url.user else { return nil }
+        return .sftp(SFTPConfig(
+            host: host,
+            port: url.port ?? 22,
+            username: user,
+            remotePath: url.path.isEmpty ? "." : url.path
+        ))
+    }
+}
+
 public struct SFTPConfig: Sendable, Codable, Equatable {
     public var host: String
     public var port: Int

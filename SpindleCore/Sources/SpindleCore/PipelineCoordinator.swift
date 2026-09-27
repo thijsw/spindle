@@ -116,14 +116,6 @@ public actor PipelineCoordinator {
         }
     }
 
-    /// One file headed for the destination.
-    private struct Upload {
-        let url: URL
-        let relativePath: String
-        /// Disc track number for audio files; nil for cover/log/cue.
-        let trackNumber: Int?
-    }
-
     private var preferences: Preferences
     private let dependencies: Dependencies
     private let jobStore: JobStore
@@ -515,21 +507,14 @@ public actor PipelineCoordinator {
         var ranked: [ReleaseScorer.Ranked] = []
         var exactDiscID = false
         do {
-            let releases: [MBRelease]
-            switch try await dependencies.metadata.lookup(disc: discTOC) {
-            case .matched(let found):
-                releases = found
-                exactDiscID = true
-            case .fuzzy(let found):
-                releases = found
-            case .none:
-                releases = []
-            }
-            ranked = ReleaseScorer(preferences: preferences.metadata).rank(
-                releases,
-                discID: discTOC.musicBrainzDiscID,
-                audioTrackCount: toc.audioTracks.count
+            let lookup = try await ReleaseLookup.perform(
+                disc: discTOC,
+                audioTrackCount: toc.audioTracks.count,
+                metadata: dependencies.metadata,
+                preferences: preferences.metadata
             )
+            ranked = lookup.ranked
+            exactDiscID = lookup.exactDiscID
         } catch {
             // Network trouble: fall back to CD-TEXT silently.
         }
@@ -595,7 +580,7 @@ public actor PipelineCoordinator {
         do {
             await encodeSlots.wait()
             setStage(job, .encoding)
-            let uploads: [Upload]
+            let uploads: [DeliveredFile]
             do {
                 uploads = try await encode(job, album: album)
             } catch {
@@ -625,72 +610,40 @@ public actor PipelineCoordinator {
         }
     }
 
-    /// Encodes every ripped track into the staging "encoded" folder and
-    /// writes the per-folder extras (cover, rip log, cue sheet) the
-    /// `DeliveryPlan` calls for.
-    private func encode(_ job: Job, album: ResolvedAlbum) async throws -> [Upload] {
-        let preferences = job.preferences
-        let encodedDir = job.stagingDir.appendingPathComponent("encoded")
+    /// Encodes the ripped tracks and per-folder extras into the staging
+    /// "encoded" folder (see `AlbumEncoder`, shared with the CLI).
+    private func encode(_ job: Job, album: ResolvedAlbum) async throws -> [DeliveredFile] {
         guard let outcome = job.ripOutcome, let toc = job.toc else { return [] }
-        let wavURLs = Dictionary(uniqueKeysWithValues: outcome.tracks.map { ($0.trackNumber, $0.wavURL) })
-
-        let plan = DeliveryPlan.build(
+        let input = AlbumEncoder.Input(
             album: album,
-            rippedTrackNumbers: outcome.tracks.map(\.trackNumber),
-            template: preferences.namingTemplate,
-            format: preferences.format,
-            coverExtension: preferences.writeCoverJPEG ? job.art?.fileExtension : nil,
-            ripLog: preferences.writeRipLog,
-            cueSheet: preferences.writeCueSheet
-        )
-        let encoder = preferences.format.makeEncoder()
-        // Rendered once; every album folder gets the same log.
-        var renderedLog: String?
-
-        var uploads: [Upload] = []
-        for file in plan.files {
-            let url = encodedDir.appendingPathComponent(file.relativePath)
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            wavURLs: Dictionary(uniqueKeysWithValues: outcome.tracks.map { ($0.trackNumber, $0.wavURL) }),
+            art: job.art,
+            toc: toc,
+            discTOC: job.discTOC,
+            ripLog: RipLog(
+                drive: job.driveIdentity,
+                configuration: job.ripConfig ?? RipConfiguration(),
+                toc: toc,
+                discTOC: job.discTOC,
+                album: album,
+                outcome: outcome,
+                ripDuration: job.ripDuration
             )
-            var trackNumber: Int?
-            switch file.content {
-            case .audio(let number):
-                guard let wav = wavURLs[number],
-                      let track = album.tracks.first(where: { $0.position == number })
-                else { continue }
-                try await encoder.encode(wav: wav, to: url, tags: TrackTags(album: album, track: track), art: job.art)
-                updateTrack(job, number: number, status: .encoded)
-                trackNumber = number
-            case .cover:
-                guard let art = job.art else { continue }
-                try art.data.write(to: url)
-            case .ripLog:
-                if renderedLog == nil {
-                    renderedLog = RipLog(
-                        drive: job.driveIdentity,
-                        configuration: job.ripConfig ?? RipConfiguration(),
-                        toc: toc,
-                        discTOC: job.discTOC,
-                        album: album,
-                        outcome: outcome,
-                        ripDuration: job.ripDuration
-                    ).render()
-                }
-                try renderedLog?.write(to: url, atomically: true, encoding: .utf8)
-            case .cueSheet(let fileNames):
-                let cue = CueSheet.render(
-                    album: album, toc: toc, discTOC: job.discTOC, fileNames: fileNames,
-                    comment: "Spindle \(Spindle.version)"
-                )
-                try cue.write(to: url, atomically: true, encoding: .utf8)
-            }
-            uploads.append(Upload(url: url, relativePath: file.relativePath, trackNumber: trackNumber))
+        )
+        let jobID = job.id
+        return try await AlbumEncoder(preferences: job.preferences).encode(
+            input, into: job.stagingDir.appendingPathComponent("encoded")
+        ) { [weak self] number in
+            await self?.trackEncoded(jobID: jobID, number: number)
         }
-        return uploads
     }
 
-    private func transfer(_ job: Job, uploads: [Upload], to config: DestinationConfig) async throws {
+    private func trackEncoded(jobID: JobID, number: Int) {
+        guard let job = jobs[jobID] else { return }
+        updateTrack(job, number: number, status: .encoded)
+    }
+
+    private func transfer(_ job: Job, uploads: [DeliveredFile], to config: DestinationConfig) async throws {
         let destination = dependencies.destinationFactory(config)
         try await destination.prepare()
 

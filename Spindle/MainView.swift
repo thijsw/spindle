@@ -166,34 +166,21 @@ struct TrackRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text(String(format: "%02d", track.number))
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, alignment: .trailing)
+            TrackNumberLabel(number: track.number)
 
             Text(track.title)
                 .lineLimit(1)
 
             Spacer()
 
-            Text(durationString)
-                .font(.system(.callout, design: .monospaced))
-                .foregroundStyle(.tertiary)
+            TrackDurationLabel(seconds: track.durationSeconds)
 
             statusView
                 .frame(width: 40, alignment: .trailing)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(
-            track.number.isMultiple(of: 2) ? Color.clear : Color.secondary.opacity(0.05),
-            in: RoundedRectangle(cornerRadius: 5)
-        )
-    }
-
-    private var durationString: String {
-        let seconds = Int(track.durationSeconds.rounded())
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+        .trackRowBackground(number: track.number)
     }
 
     @ViewBuilder private var statusView: some View {

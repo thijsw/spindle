@@ -85,3 +85,19 @@ import Testing
         #expect(!DestinationError.notWritable("/x").isTransient)
     }
 }
+
+@Suite struct DestinationSpecTests {
+    @Test func parsesSFTPURLsAndFolderPaths() {
+        #expect(
+            DestinationConfig.parse("sftp://me@nas:2222/srv/music")
+                == .sftp(SFTPConfig(host: "nas", port: 2222, username: "me", remotePath: "/srv/music"))
+        )
+        #expect(
+            DestinationConfig.parse("sftp://me@nas")
+                == .sftp(SFTPConfig(host: "nas", port: 22, username: "me", remotePath: ".")),
+            "no path means the login directory"
+        )
+        #expect(DestinationConfig.parse("sftp://nas/music") == nil, "a user is required")
+        #expect(DestinationConfig.parse("/Volumes/Music") == .localFolder(path: "/Volumes/Music"))
+    }
+}

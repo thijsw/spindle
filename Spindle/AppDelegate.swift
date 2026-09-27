@@ -1,12 +1,13 @@
 import AppKit
 
 /// Guards against quitting while a disc is mid-rip.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// Wired up by AppModel at launch.
-    nonisolated(unsafe) static var hasActiveWork: @MainActor () -> Bool = { false }
+    /// The running model, set by `AppModel.start()`.
+    static weak var activeModel: AppModel?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard MainActor.assumeIsolated(Self.hasActiveWork) else { return .terminateNow }
+        guard Self.activeModel?.hasActiveJobs == true else { return .terminateNow }
 
         let alert = NSAlert()
         alert.messageText = "A disc is still being processed"

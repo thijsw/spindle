@@ -24,13 +24,7 @@ final class AppModel {
     private(set) var menuBarSummary = "Waiting for a disc"
 
     private func refreshMenuBarSummary() {
-        let active = jobs.filter { !$0.stage.isTerminal }
-        let summary: String
-        if let job = active.last {
-            summary = "\(job.displayTitle) — \(job.stage.label)"
-        } else {
-            summary = "Waiting for a disc"
-        }
+        let summary = JobPresentation.menuBarSummary(jobs: jobs)
         if summary != menuBarSummary { menuBarSummary = summary }
     }
     private(set) var startupError: String?
@@ -68,9 +62,7 @@ final class AppModel {
     }
 
     /// The job the main window focuses on: the most recent non-terminal one.
-    var activeJob: JobSnapshot? {
-        jobs.last { !$0.stage.isTerminal }
-    }
+    var activeJob: JobSnapshot? { JobPresentation.activeJob(in: jobs) }
 
     var pickerJob: JobSnapshot? {
         pickerJobID.flatMap { id in jobs.first { $0.id == id } }
@@ -81,46 +73,14 @@ final class AppModel {
     private(set) var transferRate: [JobID: Double] = [:]
 
     /// One-line description of what the app is doing right now, for the
-    /// status bar. Prefers the most downstream activity (uploading), so the
-    /// user sees the step that's actually taking time.
+    /// status bar (see `JobPresentation`).
     var statusText: String {
-        let active = jobs.filter { !$0.stage.isTerminal }
-        guard !active.isEmpty else {
-            return settings.preferences.destination == nil
-                ? "No destination set — open Settings"
-                : "Ready — insert a disc"
-        }
-        func title(_ job: JobSnapshot) -> String { job.album?.album ?? "Audio CD" }
-
-        if let job = active.first(where: { $0.stage == .transferring }) {
-            let pct = Int((transferFraction[job.id] ?? 0) * 100)
-            let bps = transferRate[job.id] ?? 0
-            let speed = bps > 0 ? " · \(Self.formatRate(bps))" : ""
-            return "Uploading \(title(job)) — \(pct)%\(speed)"
-        }
-        if let job = active.first(where: { $0.stage == .encoding }) {
-            return "Encoding \(title(job))"
-        }
-        // `active` is non-empty, so there is always a most recent active job.
-        let job = activeJob ?? active[0]
-        if job.stage == .ripping, let detail = rippingTrackDetail(job) {
-            return "Ripping \(title(job)) — \(detail)"
-        }
-        return "\(job.stage.label) — \(title(job))"
-    }
-
-    /// "track N of M" for the track currently being read, or nil.
-    private func rippingTrackDetail(_ job: JobSnapshot) -> String? {
-        guard let current = job.tracks.first(where: {
-            if case .ripping = $0.status { return true } else { return false }
-        }) else { return nil }
-        return "track \(current.number) of \(job.tracks.count)"
-    }
-
-    private static func formatRate(_ bytesPerSecond: Double) -> String {
-        let mb = bytesPerSecond / 1_000_000
-        if mb >= 1 { return String(format: "%.1f MB/s", mb) }
-        return String(format: "%.0f KB/s", bytesPerSecond / 1000)
+        JobPresentation.statusText(
+            jobs: jobs,
+            transferFraction: transferFraction,
+            transferRate: transferRate,
+            hasDestination: settings.preferences.destination != nil
+        )
     }
 
     /// Upload fraction to show as a determinate bar, or nil to show a spinner.
@@ -131,7 +91,7 @@ final class AppModel {
 
     func start() {
         guard coordinator == nil else { return }
-        AppDelegate.hasActiveWork = { [weak self] in self?.hasActiveJobs ?? false }
+        AppDelegate.activeModel = self
         cleanUpStaleStaging()
         do {
             let coordinator = PipelineCoordinator(

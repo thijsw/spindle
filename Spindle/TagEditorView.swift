@@ -138,10 +138,7 @@ struct TagEditorView: View {
             VStack(spacing: 2) {
                 ForEach($draft.tracks, id: \.position) { $track in
                     HStack(spacing: 8) {
-                        Text(String(format: "%02d", track.position))
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 28, alignment: .trailing)
+                        TrackNumberLabel(number: track.position)
 
                         TextField("Title", text: $track.title)
                             .focused($focusedField, equals: .title(track.position))
@@ -152,30 +149,19 @@ struct TagEditorView: View {
                                 .frame(width: 160)
                         }
 
-                        Text(durationString(track.position))
-                            .font(.system(.callout, design: .monospaced))
-                            .foregroundStyle(.tertiary)
+                        TrackDurationLabel(seconds: session.durations[track.position])
                             .frame(width: 44, alignment: .trailing)
                     }
                     .textFieldStyle(.roundedBorder)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(
-                        track.position.isMultiple(of: 2) ? Color.secondary.opacity(0.05) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 5)
-                    )
+                    .trackRowBackground(number: track.position)
                 }
             }
             .padding(.vertical, 2)
         }
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
         .frame(maxHeight: .infinity)
-    }
-
-    private func durationString(_ position: Int) -> String {
-        guard let seconds = session.durations[position] else { return "" }
-        let s = Int(seconds.rounded())
-        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     // MARK: Saving

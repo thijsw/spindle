@@ -54,7 +54,7 @@ public struct RipLog: Sendable {
         lines.append("")
         add("Ripped on", ripDate.formatted(.iso8601))
         if let ripDuration {
-            add("Rip time", Self.clock(seconds: Int(ripDuration.components.seconds)))
+            add("Rip time", DisplayFormat.minutesSeconds(ripDuration / .seconds(1)))
         }
         add("Drive", drive.map { "\($0.displayName) [\($0.revision)]" } ?? "unknown")
         add("Read offset", String(format: "%+d samples", configuration.sampleOffset))
@@ -89,7 +89,7 @@ public struct RipLog: Sendable {
                 track.isAudio ? "audio" : "data ",
                 track.startLBA,
                 length,
-                Self.clock(seconds: length / 75)
+                DisplayFormat.minutesSeconds(Double(length) / 75)
             )
             if track.hasPreEmphasis { line += "  pre-emphasis" }
             lines.append(line)
@@ -168,9 +168,5 @@ public struct RipLog: Sendable {
         case .differs(let best): return "✗ differs from database (best confidence \(best))"
         case .notInDatabase: return "not in database"
         }
-    }
-
-    private static func clock(seconds: Int) -> String {
-        String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 }
