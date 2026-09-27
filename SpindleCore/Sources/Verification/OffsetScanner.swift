@@ -66,21 +66,10 @@ public enum OffsetScanner {
         }
         let stream = ConcatenatedBytes(chunks: pcm)
 
-        let firstSample = audioTracks[0].startLBA * 588
-        let audioEnd = toc.sessionLeadOuts[audioTracks[0].session] ?? toc.leadOutLBA
-        let totalSamples = audioEnd * 588
-        let prefix = CTDBWindow.prefix
-        let suffix = CTDBWindow.suffix(totalSamples: totalSamples)
-
+        let firstSample = audioTracks[0].startLBA * SectorAreas.samplesPerSector
+        let totalSamples = CTDBWindow.totalSamples(of: toc)
         // Absolute sample windows of each track's CTDB checksum at offset 0.
-        var windows: [(track: Int, range: Range<Int>)] = []
-        for (index, track) in audioTracks.enumerated() {
-            let start = track.startLBA * 588 + (index == 0 ? prefix : 0)
-            let end = index == audioTracks.count - 1
-                ? totalSamples - suffix
-                : track.startLBA * 588 + toc.lengthInSectors(of: track) * 588
-            windows.append((track.number, start ..< end))
-        }
+        let windows = CTDBWindow.trackWindows(for: toc)
 
         var results: [Candidate] = []
         for offset in candidates {
@@ -91,25 +80,16 @@ public enum OffsetScanner {
             for (index, window) in windows.enumerated() {
                 let crc = streamCRC(
                     stream: stream,
-                    sampleRange: (window.range.lowerBound + offset) ..< (window.range.upperBound + offset),
+                    sampleRange: (window.samples.lowerBound + offset) ..< (window.samples.upperBound + offset),
                     firstSample: firstSample,
                     totalSamples: totalSamples
                 )
-                var trackConfidence = 0
-                var best = 0
-                for entry in entries where index < entry.trackCRC32s.count {
-                    best = max(best, entry.confidence)
-                    if entry.trackCRC32s[index] == crc {
-                        trackConfidence += entry.confidence
-                    }
-                }
-                if trackConfidence > 0 {
+                let verdict = CTDBVerifier.verdict(trackIndex: index, crc: crc, entries: entries)
+                if case .accuratelyRipped(let trackConfidence) = verdict {
                     matched += 1
                     confidence += trackConfidence
-                    verdicts[window.track] = .accuratelyRipped(confidence: trackConfidence)
-                } else {
-                    verdicts[window.track] = .differs(bestConfidence: best)
                 }
+                verdicts[window.track.number] = verdict
             }
 
             results.append(Candidate(

@@ -65,7 +65,7 @@ private struct StaticCTDBVerifier: RipVerifier {
         let outcome = try await ripper.rip(toc: toc, to: dir)
 
         #expect(outcome.reRippedTracks.isEmpty, "no secure re-rips needed")
-        #expect(outcome.strategy.contains("verified"), "verification reported")
+        #expect(outcome.summary.contains("verified"), "verification reported")
         let verdicts = outcome.verification?.trackVerdicts
         #expect(verdicts?[1] == .accuratelyRipped(confidence: 42))
         #expect(verdicts?[2] == .accuratelyRipped(confidence: 42))
@@ -118,7 +118,7 @@ private struct StaticCTDBVerifier: RipVerifier {
         let outcome = try await ripper.rip(toc: toc, to: dir)
 
         #expect(outcome.reRippedTracks.isEmpty, "clean unknown disc not re-ripped")
-        #expect(outcome.strategy.contains("read clean"), "trust-clean-read reported")
+        #expect(outcome.summary.contains("read clean"), "trust-clean-read reported")
         let wav = try Data(contentsOf: dir.appendingPathComponent("track01.wav")).dropFirst(44)
         let expected = Data((0 ..< 150 * 2352).map { MockCDDevice.canonicalByte(at: $0) })
         #expect(wav == expected)

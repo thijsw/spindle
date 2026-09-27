@@ -1,3 +1,4 @@
+import DiscDrive
 import Foundation
 
 /// Standard CRC-32 (zlib polynomial), used as Spindle's rip-stability checksum
@@ -45,6 +46,71 @@ public enum CTDBWindow {
     /// disc's total audio length in samples.
     public static func suffix(totalSamples: Int) -> Int {
         stride + totalSamples % stride
+    }
+
+    /// One audio track's checksum window in absolute disc samples.
+    public struct TrackWindow: Sendable {
+        public let track: TOCTrack
+        public let samples: Range<Int>
+    }
+
+    /// The disc's total audio length in samples (up to the audio lead-out).
+    public static func totalSamples(of toc: TOC) -> Int {
+        toc.audioLeadOutLBA * SectorAreas.samplesPerSector
+    }
+
+    /// Per-track CTDB checksum windows: the first track starts one stride
+    /// in, the last stops `suffix` before the lead-out, middle tracks are
+    /// exact [start, nextStart). The rip engine's per-track accumulators,
+    /// the disc-level CRC and the offset scanner all derive from this one
+    /// function so they can never drift apart.
+    public static func trackWindows(for toc: TOC) -> [TrackWindow] {
+        let tracks = toc.audioTracks
+        let total = totalSamples(of: toc)
+        let perSector = SectorAreas.samplesPerSector
+        return tracks.enumerated().map { index, track in
+            let start = track.startLBA * perSector + (index == 0 ? prefix : 0)
+            let end = index == tracks.count - 1
+                ? total - suffix(totalSamples: total)
+                : (track.startLBA + toc.lengthInSectors(of: track)) * perSector
+            return TrackWindow(track: track, samples: start ..< end)
+        }
+    }
+
+    /// The whole-disc CTDB window (first track's start to last track's end).
+    public static func discWindow(for toc: TOC) -> Range<Int>? {
+        let windows = trackWindows(for: toc)
+        guard let first = windows.first, let last = windows.last else { return nil }
+        return first.samples.lowerBound ..< last.samples.upperBound
+    }
+}
+
+/// Where a track sits on the disc, which decides the AccurateRip and CTDB
+/// edge exclusions of its checksums.
+public struct TrackPosition: Sendable, Equatable {
+    public let isFirst: Bool
+    public let isLast: Bool
+    /// Total audio samples of the disc (needed for the last track's CTDB
+    /// trailing exclusion, which depends on the disc length).
+    public let discTotalSamples: Int
+
+    public init(isFirst: Bool, isLast: Bool, discTotalSamples: Int) {
+        self.isFirst = isFirst
+        self.isLast = isLast
+        self.discTotalSamples = discTotalSamples
+    }
+
+    /// A track with other audio tracks on both sides: no edge exclusions.
+    public static let middle = TrackPosition(isFirst: false, isLast: false, discTotalSamples: 0)
+
+    /// Position of `track` among the disc's audio tracks.
+    public init(of track: TOCTrack, in toc: TOC) {
+        let audio = toc.audioTracks
+        self.init(
+            isFirst: track.number == audio.first?.number,
+            isLast: track.number == audio.last?.number,
+            discTotalSamples: CTDBWindow.totalSamples(of: toc)
+        )
     }
 }
 
@@ -104,15 +170,16 @@ public struct ChecksumAccumulator: Sendable {
     private let firstExcludedTrailingSample: Int
     private var pending = Data() // carries partial sample frames between updates
 
-    public init(
-        totalSamples: Int,
-        isFirstTrack: Bool,
-        isLastTrack: Bool,
-        ctdbLeadingSkip: Int = 0,
-        ctdbTrailingSkip: Int = 0
-    ) {
-        self.skippedLeadingSamples = isFirstTrack ? 5 * 588 - 1 : 0
-        self.firstExcludedTrailingSample = totalSamples - (isLastTrack ? 5 * 588 : 0)
+    /// - Parameters:
+    ///   - totalSamples: the track's length in sample frames.
+    ///   - position: first/last-track status, which sets both the
+    ///     AccurateRip exclusions and the CTDB edge windows.
+    public init(totalSamples: Int, position: TrackPosition) {
+        let perSector = SectorAreas.samplesPerSector
+        self.skippedLeadingSamples = position.isFirst ? 5 * perSector - 1 : 0
+        self.firstExcludedTrailingSample = totalSamples - (position.isLast ? 5 * perSector : 0)
+        let ctdbLeadingSkip = position.isFirst ? CTDBWindow.prefix : 0
+        let ctdbTrailingSkip = position.isLast ? CTDBWindow.suffix(totalSamples: position.discTotalSamples) : 0
         self.ctdb = RangeGatedCRC32(
             coveredBytes: ctdbLeadingSkip * 4 ..< (totalSamples - ctdbTrailingSkip) * 4
         )

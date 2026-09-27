@@ -64,7 +64,7 @@ public struct RippedTrack: Sendable {
     public let usedC2: Bool
     /// True when the drive's C2 reporting was caught lying mid-track and the
     /// track was restarted in compare mode. C2 should stay off for this drive.
-    public var c2Distrusted: Bool = false
+    public let c2Unreliable: Bool
 
     public init(
         trackNumber: Int,
@@ -73,7 +73,7 @@ public struct RippedTrack: Sendable {
         rereads: Int,
         unrecoverableSectors: [Int],
         usedC2: Bool,
-        c2Distrusted: Bool = false
+        c2Unreliable: Bool = false
     ) {
         self.trackNumber = trackNumber
         self.wavURL = wavURL
@@ -81,7 +81,7 @@ public struct RippedTrack: Sendable {
         self.rereads = rereads
         self.unrecoverableSectors = unrecoverableSectors
         self.usedC2 = usedC2
-        self.c2Distrusted = c2Distrusted
+        self.c2Unreliable = c2Unreliable
     }
 }
 

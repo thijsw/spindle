@@ -17,6 +17,8 @@ public struct SectorAreas: OptionSet, Sendable, Hashable {
     public static let audioBytesPerSector = 2352
     public static let c2BytesPerSector = 294
     public static let subQBytesPerSector = 16
+    /// 16-bit stereo sample frames per CDDA sector (2352 / 4).
+    public static let samplesPerSector = 588
 
     public var bytesPerSector: Int {
         var n = 0
@@ -62,6 +64,25 @@ public struct SectorBuffer: Sendable {
     public func hasC2Error(sector: Int) -> Bool {
         guard let flags = c2Flags(sector: sector) else { return false }
         return flags.contains { $0 != 0 }
+    }
+
+    /// Indices of every sector with at least one C2 bit set, scanned in one
+    /// pass over the raw buffer (no per-sector copies).
+    public func c2FlaggedSectors() -> Set<Int> {
+        guard areas.contains(.errorFlags) else { return [] }
+        let stride = areas.bytesPerSector
+        let flagOffset = areas.contains(.user) ? SectorAreas.audioBytesPerSector : 0
+        return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Set<Int> in
+            var flagged = Set<Int>()
+            for sector in 0 ..< sectorCount {
+                let base = sector * stride + flagOffset
+                for offset in 0 ..< SectorAreas.c2BytesPerSector where raw[base + offset] != 0 {
+                    flagged.insert(sector)
+                    break
+                }
+            }
+            return flagged
+        }
     }
 
     /// All audio bytes of the buffer concatenated (2352 × sectorCount).

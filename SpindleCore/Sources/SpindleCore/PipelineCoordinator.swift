@@ -426,7 +426,7 @@ public actor PipelineCoordinator {
     private func applyRipOutcome(_ outcome: VerifiedRipper.Outcome, to job: Job, driveKey: String?) {
         job.snapshot.verificationSummary = outcome.verification?.summary
             ?? outcome.verificationError.map { "Verification unavailable: \($0)" }
-            ?? outcome.strategy
+            ?? outcome.summary
         if outcome.c2Unreliable, let driveKey {
             eventContinuation.yield(.c2Unreliable(driveKey: driveKey))
         }

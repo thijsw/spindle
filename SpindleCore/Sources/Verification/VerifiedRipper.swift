@@ -14,13 +14,24 @@ import RipEngine
 ///
 /// Discs absent from the database fall back to a full secure rip.
 public struct VerifiedRipper: Sendable {
+    /// Which path produced the final audio.
+    public enum Strategy: Sendable, Equatable {
+        /// Secure rip only (no verification database was available).
+        case secureOnly
+        /// Fast rip, as requested.
+        case fast
+        /// Secure was requested, but the fast pass verified or read clean.
+        case fastTrusted
+        /// The fast pass left tracks with read errors; those were re-ripped.
+        case secureReRip(trackCount: Int)
+    }
+
     public struct Outcome: Sendable {
         public var tracks: [RippedTrack]
         public var verification: VerificationResult?
         /// Track numbers that needed a secure re-rip after the fast pass.
         public var reRippedTracks: [Int]
-        /// Human-readable description of which strategy resolved the rip.
-        public var strategy: String
+        public var strategy: Strategy
         /// True when the drive's C2 reporting was caught lying — remember
         /// per drive and disable C2 for it in future rips.
         public var c2Unreliable: Bool
@@ -35,7 +46,7 @@ public struct VerifiedRipper: Sendable {
             tracks: [RippedTrack],
             verification: VerificationResult?,
             reRippedTracks: [Int],
-            strategy: String,
+            strategy: Strategy,
             c2Unreliable: Bool,
             failedTracks: [Int],
             verificationError: String? = nil
@@ -47,6 +58,22 @@ public struct VerifiedRipper: Sendable {
             self.c2Unreliable = c2Unreliable
             self.failedTracks = failedTracks
             self.verificationError = verificationError
+        }
+
+        /// The database verdict in one line, or why there is none.
+        public var verificationSummary: String {
+            verification?.summary ?? verificationError.map { "CTDB unavailable (\($0))" } ?? "not in CTDB"
+        }
+
+        /// One human-readable line describing how the rip was resolved.
+        public var summary: String {
+            switch strategy {
+            case .secureOnly: "Secure rip (no verification database available)"
+            case .fast: "Fast rip — \(verificationSummary)"
+            case .fastTrusted: "Fast rip, read clean — \(verificationSummary)"
+            case .secureReRip(let count):
+                "Secure re-rip of \(count) track(s) with read errors — \(verificationSummary)"
+            }
         }
     }
 
@@ -68,19 +95,19 @@ public struct VerifiedRipper: Sendable {
         let secureRequested: Bool = if case .secure = configuration.mode { true } else { false }
         // One damage chart for the whole operation: scratches mapped during
         // the burst pass are never re-probed by the secure re-rip.
-        let damage = TrackRipper.DamageMap()
+        let damage = DamageMap()
 
         // Without a verifier, a fast first pass proves nothing — go straight
         // to the secure engine instead of ripping everything twice.
         if secureRequested, verifier == nil {
-            let secure = try await DiscRipper(device: device, config: configuration, damage: damage)
-                .ripDisc(toc: toc, to: stagingDirectory, progress: progress)
+            let secure = try await DiscRipper(device: device, configuration: configuration, damage: damage)
+                .rip(toc: toc, to: stagingDirectory, progress: progress)
             return Outcome(
                 tracks: secure.tracks,
                 verification: nil,
                 reRippedTracks: [],
-                strategy: "Secure rip (no verification database available)",
-                c2Unreliable: secure.c2Distrusted,
+                strategy: .secureOnly,
+                c2Unreliable: secure.c2Unreliable,
                 failedTracks: secure.failedTracks
             )
         }
@@ -89,8 +116,8 @@ public struct VerifiedRipper: Sendable {
         // the slow machinery entirely.
         var burstConfiguration = configuration
         burstConfiguration.mode = .burst
-        let firstPass = try await DiscRipper(device: device, config: burstConfiguration, damage: damage)
-            .ripDisc(toc: toc, to: stagingDirectory, progress: progress)
+        let firstPass = try await DiscRipper(device: device, configuration: burstConfiguration, damage: damage)
+            .rip(toc: toc, to: stagingDirectory, progress: progress)
 
         var (verification, verificationError) = await verify(
             toc: toc, tracks: firstPass.tracks, discCRC: firstPass.ctdbDiscCRC32
@@ -101,62 +128,32 @@ public struct VerifiedRipper: Sendable {
                 tracks: firstPass.tracks,
                 verification: verification,
                 reRippedTracks: [],
-                strategy: "Fast rip" + (verification.map { " — \($0.summary)" } ?? ""),
-                c2Unreliable: firstPass.c2Distrusted,
+                strategy: .fast,
+                c2Unreliable: firstPass.c2Unreliable,
                 failedTracks: firstPass.failedTracks,
                 verificationError: verificationError
             )
         }
 
-        // Decide which tracks to re-rip securely.
-        //
-        // Policy ("trust one clean pass"): a clean single read is accepted
-        // unless there's positive evidence it's wrong. Two cases:
-        //
-        // - The disc is in CTDB and at least one track matched — so this IS
-        //   the right pressing/master. A track that then DIFFERS is evidence
-        //   of a read error (the rest of the disc proves the master), so
-        //   re-rip exactly those differing tracks.
-        // - Zero tracks matched — the disc isn't in CTDB, or it's a different
-        //   master/pressing where nothing will ever match (common for
-        //   Enhanced CDs and reissues). Re-reading the same clean sectors
-        //   just reproduces identical bytes, so trust the clean reads and
-        //   re-rip only tracks that hit an actual unreadable sector.
-        let verifiedCount = verification?.trackVerdicts.values.filter {
-            if case .accuratelyRipped = $0 { true } else { false }
-        }.count ?? 0
-
-        var unverified: [Int]
-        if verifiedCount > 0, let verification {
-            unverified = verification.trackVerdicts
-                .filter { if case .differs = $0.value { true } else { false } }
-                .map(\.key)
-                .sorted()
-        } else {
-            unverified = firstPass.tracks
-                .filter { !$0.unrecoverableSectors.isEmpty }
-                .map(\.trackNumber)
-                .sorted()
-        }
-        // A track that already exceeded its time budget would just burn
-        // another budget in the secure pass — carry it as failed instead.
-        unverified.removeAll { firstPass.failedTracks.contains($0) }
-
+        let unverified = Self.tracksToReRip(firstPass: firstPass, verification: verification)
         if unverified.isEmpty {
             return Outcome(
                 tracks: firstPass.tracks,
                 verification: verification,
                 reRippedTracks: [],
-                strategy: "Fast rip, read clean — \(Self.summary(verification, verificationError))",
-                c2Unreliable: firstPass.c2Distrusted,
+                strategy: .fastTrusted,
+                c2Unreliable: firstPass.c2Unreliable,
                 failedTracks: firstPass.failedTracks,
                 verificationError: verificationError
             )
         }
 
-        // Pass 2: secure re-rip of only the tracks that had read errors.
-        let secondPass = try await DiscRipper(device: device, config: configuration, damage: damage)
-            .ripDisc(toc: toc, only: Set(unverified), to: stagingDirectory, progress: progress)
+        // Pass 2: secure re-rip of only the tracks that had read errors. The
+        // first pass already found the request size the drive accepts.
+        var secureConfiguration = configuration
+        secureConfiguration.chunkSectors = firstPass.tunedChunkSectors
+        let secondPass = try await DiscRipper(device: device, configuration: secureConfiguration, damage: damage)
+            .rip(toc: toc, only: Set(unverified), to: stagingDirectory, progress: progress)
 
         var merged = firstPass.tracks.filter { !unverified.contains($0.trackNumber) }
         merged.append(contentsOf: secondPass.tracks)
@@ -167,21 +164,49 @@ public struct VerifiedRipper: Sendable {
         // failed re-check reports "unavailable" rather than keeping them.
         (verification, verificationError) = await verify(toc: toc, tracks: merged, discCRC: nil)
 
-        let strategy = "Secure re-rip of \(unverified.count) track(s) with read errors — "
-            + Self.summary(verification, verificationError)
         return Outcome(
             tracks: merged,
             verification: verification,
             reRippedTracks: unverified,
-            strategy: strategy,
-            c2Unreliable: firstPass.c2Distrusted || secondPass.c2Distrusted,
+            strategy: .secureReRip(trackCount: unverified.count),
+            c2Unreliable: firstPass.c2Unreliable || secondPass.c2Unreliable,
             failedTracks: (firstPass.failedTracks + secondPass.failedTracks).sorted(),
             verificationError: verificationError
         )
     }
 
-    private static func summary(_ verification: VerificationResult?, _ error: String?) -> String {
-        verification?.summary ?? error.map { "CTDB unavailable (\($0))" } ?? "not in CTDB"
+    /// Which tracks of a burst pass deserve the secure engine.
+    ///
+    /// Policy ("trust one clean pass"): a clean single read is accepted
+    /// unless there's positive evidence it's wrong. Two cases:
+    ///
+    /// - The disc is in CTDB and at least one track matched — so this IS
+    ///   the right pressing/master. A track that then DIFFERS is evidence
+    ///   of a read error (the rest of the disc proves the master), so
+    ///   re-rip exactly those differing tracks.
+    /// - Zero tracks matched — the disc isn't in CTDB, or it's a different
+    ///   master/pressing where nothing will ever match (common for
+    ///   Enhanced CDs and reissues). Re-reading the same clean sectors
+    ///   just reproduces identical bytes, so trust the clean reads and
+    ///   re-rip only tracks that hit an actual unreadable sector.
+    ///
+    /// A track that already exceeded its time budget would just burn
+    /// another budget in the secure pass, so it stays failed.
+    public static func tracksToReRip(
+        firstPass: DiscRipper.DiscRipResult, verification: VerificationResult?
+    ) -> [Int] {
+        var candidates: [Int]
+        if let verification, verification.verifiedCount > 0 {
+            candidates = verification.trackVerdicts
+                .filter { if case .differs = $0.value { true } else { false } }
+                .map(\.key)
+        } else {
+            candidates = firstPass.tracks
+                .filter { !$0.unrecoverableSectors.isEmpty }
+                .map(\.trackNumber)
+        }
+        candidates.removeAll { firstPass.failedTracks.contains($0) }
+        return candidates.sorted()
     }
 
     /// Consults the database; a failure is reported, not disguised as an

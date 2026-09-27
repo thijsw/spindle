@@ -46,7 +46,7 @@ import Verification
                 discMatch: CTDBEntry(id: "742", confidence: 34230, discCRC32: 0, trackCRC32s: [], hasParity: false)
             ),
             reRippedTracks: [2],
-            strategy: "Secure re-rip of 1 track(s) with read errors",
+            strategy: .secureReRip(trackCount: 1),
             c2Unreliable: true,
             failedTracks: [3]
         )

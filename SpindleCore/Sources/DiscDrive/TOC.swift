@@ -54,6 +54,12 @@ public struct TOC: Sendable, Hashable, Codable {
     public func sectorRange(of track: TOCTrack) -> Range<Int> {
         track.startLBA ..< track.startLBA + lengthInSectors(of: track)
     }
+
+    /// Lead-out of the session holding the audio tracks — the end of the
+    /// readable audio area. Enhanced CDs append a data session after it.
+    public var audioLeadOutLBA: Int {
+        audioTracks.first.map { sessionLeadOuts[$0.session] ?? leadOutLBA } ?? leadOutLBA
+    }
 }
 
 public enum TOCParseError: Error, CustomStringConvertible, Sendable {

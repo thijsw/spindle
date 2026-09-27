@@ -129,7 +129,7 @@ public struct RipLog: Sendable {
         } else {
             add("Verification", "none (no database available)")
         }
-        add("Strategy", outcome.strategy)
+        add("Strategy", outcome.summary)
 
         let preEmphasis = toc.audioTracks.filter(\.hasPreEmphasis).map(\.number)
         if !preEmphasis.isEmpty {

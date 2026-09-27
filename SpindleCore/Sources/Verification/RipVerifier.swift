@@ -9,6 +9,11 @@ public enum TrackVerdict: Sendable, Equatable {
     case differs(bestConfidence: Int)
     /// The disc isn't in the database (neutral — common for obscure releases).
     case notInDatabase
+
+    public var isAccurate: Bool {
+        if case .accuratelyRipped = self { return true }
+        return false
+    }
 }
 
 public struct VerificationResult: Sendable {
@@ -23,12 +28,14 @@ public struct VerificationResult: Sendable {
         self.discMatch = discMatch
     }
 
+    /// Number of tracks whose checksum the database confirms.
+    public var verifiedCount: Int {
+        trackVerdicts.values.count(where: \.isAccurate)
+    }
+
     public var summary: String {
         if entries.isEmpty { return "Not in CTDB" }
-        let accurate = trackVerdicts.values.filter {
-            if case .accuratelyRipped = $0 { return true } else { return false }
-        }.count
-        return "\(accurate)/\(trackVerdicts.count) tracks verified (CTDB, \(entries.count) entries)"
+        return "\(verifiedCount)/\(trackVerdicts.count) tracks verified (CTDB, \(entries.count) entries)"
     }
 }
 
@@ -85,22 +92,29 @@ public struct CTDBVerifier: RipVerifier {
         var verdicts: [Int: TrackVerdict] = [:]
         for (index, trackNumber) in audioTrackNumbers.enumerated() {
             guard let checksums = trackChecksums[trackNumber] else { continue }
-            var matchedConfidence = 0
-            var bestConfidence = 0
-            for entry in entries where index < entry.trackCRC32s.count {
-                bestConfidence = max(bestConfidence, entry.confidence)
-                if entry.trackCRC32s[index] == checksums.ctdbCRC32 {
-                    matchedConfidence += entry.confidence
-                }
-            }
-            verdicts[trackNumber] = matchedConfidence > 0
-                ? .accuratelyRipped(confidence: matchedConfidence)
-                : .differs(bestConfidence: bestConfidence)
+            verdicts[trackNumber] = verdict(trackIndex: index, crc: checksums.ctdbCRC32, entries: entries)
         }
 
         let discMatch = ctdbDiscCRC32.flatMap { crc in
             entries.first { $0.discCRC32 == crc }
         }
         return VerificationResult(entries: entries, trackVerdicts: verdicts, discMatch: discMatch)
+    }
+
+    /// One track's verdict against every entry that covers it: the summed
+    /// confidence of agreeing entries, or the best confidence seen when
+    /// none agrees. `trackIndex` counts audio tracks from zero.
+    public static func verdict(trackIndex: Int, crc: UInt32, entries: [CTDBEntry]) -> TrackVerdict {
+        var matchedConfidence = 0
+        var bestConfidence = 0
+        for entry in entries where trackIndex < entry.trackCRC32s.count {
+            bestConfidence = max(bestConfidence, entry.confidence)
+            if entry.trackCRC32s[trackIndex] == crc {
+                matchedConfidence += entry.confidence
+            }
+        }
+        return matchedConfidence > 0
+            ? .accuratelyRipped(confidence: matchedConfidence)
+            : .differs(bestConfidence: bestConfidence)
     }
 }

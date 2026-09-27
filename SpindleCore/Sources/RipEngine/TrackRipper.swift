@@ -6,20 +6,14 @@ import Foundation
 /// staging WAV, and computes checksums on the corrected stream.
 ///
 /// Secure-mode design notes (after cdparanoia/EAC/dbpoweramp):
-/// - Drives cache audio reads, and an immediate re-read of the same sectors
-///   is served from that cache — identical garbage twice looks "verified".
-///   Compare mode therefore makes two *full separated passes* over the track
-///   (a track is far larger than any drive cache). Targeted re-reads are
-///   cache-busted only when timing shows the previous read actually came
-///   from the cache (< 6 ms — cdparanoia's heuristic); a slow read already
-///   proves medium access, and busting it would just wear the mechanism.
-/// - Damaged regions make the drive retry internally for seconds per
-///   request. The engine responds like the reference rippers: drop the
-///   drive to a low speed (damaged media reads better slowly), bisect
-///   failing requests so single bad sectors can't stall whole chunks, and
-///   give up quickly per sector (zero-fill + report) instead of hammering.
+/// - Compare mode makes two *full separated passes* over the track (a track
+///   is far larger than any drive cache), then settles the sectors that
+///   differ by voting (`Settler`).
 /// - C2 mode trusts the drive's error pointers for triage (single pass),
-///   only after `DiscRipper.probeC2` has validated the C2 data is real.
+///   only after `DiscRipper` has probed that the C2 data is real — and keeps
+///   watching the flag rate, because some drives lie intermittently.
+/// - Damaged regions are crossed by `ResilientReader`, which budgets failing
+///   device contacts rather than sectors.
 public struct TrackRipper: Sendable {
     let device: any CDDeviceIO
     let config: RipConfiguration
@@ -29,30 +23,16 @@ public struct TrackRipper: Sendable {
     let damage: DamageMap
 
     private static let bytesPerSector = SectorAreas.audioBytesPerSector
-    /// Conservative bound on drive read-cache coverage, in sectors
-    /// (cdparanoia's default cache model: 1200 sectors ≈ 2.8 MB ≈ 16 s).
-    private static let cacheFlushDistance = 1200
-    /// A read faster than this came from the drive cache (cdparanoia: 6 ms).
-    private static let cacheFastThreshold: Duration = .milliseconds(6)
-    /// A read slower than this means the drive is struggling internally;
-    /// host-side retries add nothing beyond this point.
-    private static let struggleThreshold: Duration = .seconds(2)
-    /// Hard wall-clock budget for settling one sector/window: retries are
-    /// pointless once the drive's own retry storms dominate each attempt.
-    private static let settleTimeBudget: Duration = .seconds(10)
-    /// Speed requested while inside a damaged region (≈ 4×). Damaged media
-    /// reads markedly better at low speed (the XLD/dbpoweramp playbook).
-    private static let damagedRegionSpeed: UInt16 = 706
 
     public init(
         device: any CDDeviceIO,
-        config: RipConfiguration,
+        configuration: RipConfiguration,
         readableSectors: Range<Int>,
         useC2: Bool,
         damage: DamageMap = DamageMap()
     ) {
         self.device = device
-        self.config = config
+        self.config = configuration
         self.readableSectors = readableSectors
         self.useC2 = useC2
         self.damage = damage
@@ -62,116 +42,83 @@ public struct TrackRipper: Sendable {
     /// be restarted in compare mode and C2 retired for this drive.
     struct C2DistrustError: Error {}
 
-    /// Per-rip drive-state tracker (speed reduction happens once per track).
-    private actor RipHealth {
-        private(set) var slowed = false
-        private var c2SectorsSeen = 0
-        private var c2SectorsFlagged = 0
-        private let deadline: ContinuousClock.Instant?
-
-        init(deadline: ContinuousClock.Instant?) {
-            self.deadline = deadline
-        }
-
-        /// Throws when the track's wall-clock budget is exhausted. Checked
-        /// between device contacts; a single in-flight ioctl can't be
-        /// interrupted, so the budget is best-effort by one contact.
-        func checkDeadline() throws {
-            if let deadline, ContinuousClock.now > deadline {
-                throw RipError.trackTimeLimitExceeded
-            }
-        }
-
-        /// True the first time a struggle is reported (caller then slows the drive).
-        func noteStruggle() -> Bool {
-            if slowed { return false }
-            slowed = true
-            return true
-        }
-
-        /// Tracks the C2 flag rate. A working drive flags a tiny fraction of
-        /// sectors even on a bad disc; whole-chunk flagging means the drive
-        /// is lying (one-shot probes can't catch intermittent liars).
-        /// Returns true when C2 should no longer be believed.
-        func noteC2(flagged: Int, of count: Int) -> Bool {
-            c2SectorsSeen += count
-            c2SectorsFlagged += flagged
-            return c2SectorsSeen >= 150 && c2SectorsFlagged * 20 > c2SectorsSeen
-        }
-
+    /// The secure engine's knobs, present only in secure mode.
+    private struct SecureParams {
+        let maxRetries: Int
+        let agreeingPasses: Int
     }
 
-    /// Confirmed-unreadable runs (absolute LBA ranges), shared across all
-    /// tracks and passes of one disc operation: a failing read costs the
-    /// drive's full internal retry storm, so damage charted once must never
-    /// be probed again — not by the next chunk, not by the second compare
-    /// pass, not by the verify-first secure re-rip.
-    public actor DamageMap {
-        private var runs: [Range<Int>] = []
+    private struct TrackContext {
+        let track: TOCTrack
+        let sectors: Range<Int>
+        let trackByteStart: Int
+        let wavURL: URL
+        let secure: SecureParams?
+        var checksums: ChecksumAccumulator
+        let onAudio: ((Data) -> Void)?
+        let progress: (RipProgress) -> Void
 
-        public init() {}
-
-        func recordBadRun(_ run: Range<Int>) {
-            guard !run.isEmpty else { return }
-            runs.append(run)
+        /// Corrected byte window of a run of output sectors.
+        func window(ofOutputSectors sectors: Range<Int>) -> Range<Int> {
+            let bps = TrackRipper.bytesPerSector
+            return (trackByteStart + sectors.lowerBound * bps) ..< (trackByteStart + sectors.upperBound * bps)
         }
 
-        func knownBadRuns(intersecting range: Range<Int>) -> [Range<Int>] {
-            runs.compactMap { run in
-                let overlap = run.clamped(to: range)
-                return overlap.isEmpty ? nil : overlap
-            }.sorted { $0.lowerBound < $1.lowerBound }
+        /// Corrected byte window of one output sector.
+        func window(ofOutputSector index: Int) -> Range<Int> {
+            window(ofOutputSectors: index ..< index + 1)
         }
+    }
+
+    private var reader: ResilientReader {
+        ResilientReader(
+            device: device,
+            readableSectors: readableSectors,
+            maxRequestSectors: config.chunkSectors,
+            damage: damage
+        )
     }
 
     public func rip(
         track: TOCTrack,
         toc: TOC,
-        isFirstAudio: Bool,
-        isLastAudio: Bool,
-        ctdbLeadingSkip: Int = 0,
-        ctdbTrailingSkip: Int = 0,
+        position: TrackPosition,
         to wavURL: URL,
-        onAudio: (@Sendable (Data) -> Void)? = nil,
-        progress: @Sendable @escaping (RipProgress) -> Void
+        onAudio: ((Data) -> Void)? = nil,
+        progress: @escaping (RipProgress) -> Void
     ) async throws -> RippedTrack {
         let sectors = toc.sectorRange(of: track)
+        let secure: SecureParams? = if case .secure(let maxRetries, let agreeingPasses) = config.mode {
+            SecureParams(maxRetries: maxRetries, agreeingPasses: agreeingPasses)
+        } else {
+            nil
+        }
         let context = TrackContext(
             track: track,
             sectors: sectors,
             trackByteStart: sectors.lowerBound * Self.bytesPerSector + config.sampleOffset * 4,
             wavURL: wavURL,
+            secure: secure,
             checksums: ChecksumAccumulator(
-                totalSamples: sectors.count * 588,
-                isFirstTrack: isFirstAudio,
-                isLastTrack: isLastAudio,
-                ctdbLeadingSkip: ctdbLeadingSkip,
-                ctdbTrailingSkip: ctdbTrailingSkip
+                totalSamples: sectors.count * SectorAreas.samplesPerSector, position: position
             ),
             onAudio: onAudio,
             progress: progress
         )
 
-        let health = RipHealth(
-            deadline: config.trackTimeLimit.map { ContinuousClock.now + $0 }
-        )
-        var result: RippedTrack
-        if case .secure(let maxRetries, let agreeingPasses) = config.mode {
+        let health = RipHealth(deadline: config.trackTimeLimit.map { ContinuousClock.now + $0 })
+        let result: RippedTrack
+        if let secure {
             if useC2 {
                 do {
                     result = try await singlePassRip(context, health: health)
                 } catch is C2DistrustError {
                     // The drive's C2 lied mid-track: restart this track in
                     // compare mode with fresh state.
-                    result = try await twoPassCompareRip(
-                        context, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
-                    )
-                    result.c2Distrusted = true
+                    result = try await twoPassCompareRip(context, secure: secure, health: health, c2Unreliable: true)
                 }
             } else {
-                result = try await twoPassCompareRip(
-                    context, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
-                )
+                result = try await twoPassCompareRip(context, secure: secure, health: health, c2Unreliable: false)
             }
         } else {
             result = try await singlePassRip(context, health: health)
@@ -184,24 +131,42 @@ public struct TrackRipper: Sendable {
         return result
     }
 
-    private struct TrackContext {
-        let track: TOCTrack
-        let sectors: Range<Int>
-        let trackByteStart: Int
-        let wavURL: URL
-        var checksums: ChecksumAccumulator
-        let onAudio: (@Sendable (Data) -> Void)?
-        let progress: @Sendable (RipProgress) -> Void
+    // MARK: Chunk walk shared by every pass
 
-        /// Corrected byte window of a run of output sectors.
-        func window(ofOutputSectors sectors: Range<Int>) -> Range<Int> {
-            (trackByteStart + sectors.lowerBound * 2352)
-                ..< (trackByteStart + sectors.upperBound * 2352)
-        }
+    private struct ChunkResult {
+        var audio: Data
+        var rereads: Int
+        var unrecoverableSectors: [Int]
+    }
 
-        /// Corrected byte window of one output sector.
-        func window(ofOutputSector index: Int) -> Range<Int> {
-            window(ofOutputSectors: index ..< index + 1)
+    /// Walks the track in `config.chunkSectors` pieces. Cancellation and
+    /// deadline checks, the corrected byte window, the device read and the
+    /// progress report are the same for every pass; `body` returns the
+    /// re-read count to show in the progress report.
+    private func forEachChunk(
+        _ context: TrackContext,
+        health: RipHealth,
+        withC2: Bool,
+        progressOffset: Int,
+        progressTotal: Int,
+        _ body: (_ outputSector: Int, _ result: ChunkResult) async throws -> Int
+    ) async throws {
+        let totalSectors = context.sectors.count
+        var outputSector = 0
+        while outputSector < totalSectors {
+            try Task.checkCancellation()
+            try await health.checkDeadline()
+            let chunk = min(config.chunkSectors, totalSectors - outputSector)
+            let byteRange = context.window(ofOutputSectors: outputSector ..< outputSector + chunk)
+            let result = try await readChunk(for: byteRange, health: health, c2: withC2 ? context.secure : nil)
+            let rereads = try await body(outputSector, result)
+            outputSector += chunk
+            context.progress(RipProgress(
+                trackNumber: context.track.number,
+                sectorsCompleted: progressOffset + outputSector,
+                totalSectors: progressTotal,
+                rereads: rereads
+            ))
         }
     }
 
@@ -210,33 +175,20 @@ public struct TrackRipper: Sendable {
     private func singlePassRip(_ context: TrackContext, health: RipHealth) async throws -> RippedTrack {
         var context = context
         let totalSectors = context.sectors.count
-        let writer = try WAVWriter(url: context.wavURL, expectedDataBytes: totalSectors * 2352)
+        let writer = try WAVWriter(url: context.wavURL, expectedDataBytes: totalSectors * Self.bytesPerSector)
         defer { writer.abandonIfOpen() }
         var rereads = 0
         var unrecoverable: [Int] = []
 
-        var outputSector = 0
-        while outputSector < totalSectors {
-            try Task.checkCancellation()
-            try await health.checkDeadline()
-            let chunk = min(config.chunkSectors, totalSectors - outputSector)
-            let byteRange = context.window(ofOutputSectors: outputSector ..< outputSector + chunk)
-
-            let result = try await readChunk(for: byteRange, health: health, withC2: useC2)
+        try await forEachChunk(
+            context, health: health, withC2: useC2, progressOffset: 0, progressTotal: totalSectors
+        ) { _, result in
             rereads += result.rereads
             unrecoverable.append(contentsOf: result.unrecoverableSectors)
-
             try writer.append(result.audio)
             context.checksums.update(result.audio)
             context.onAudio?(result.audio)
-
-            outputSector += chunk
-            context.progress(RipProgress(
-                trackNumber: context.track.number,
-                sectorsCompleted: outputSector,
-                totalSectors: totalSectors,
-                rereads: rereads
-            ))
+            return rereads
         }
 
         try writer.finish()
@@ -256,541 +208,219 @@ public struct TrackRipper: Sendable {
     /// per-sector CRCs. Sectors that differ between passes are settled by
     /// voting and patched into the WAV. Checksums come from the final file.
     private func twoPassCompareRip(
-        _ context: TrackContext, maxRetries: Int, agreeingPasses: Int, health: RipHealth
+        _ context: TrackContext, secure: SecureParams, health: RipHealth, c2Unreliable: Bool
     ) async throws -> RippedTrack {
         var context = context
-        let totalSectors = context.sectors.count
-        let progressTotal = totalSectors * 2
-        var rereads = 1 // count the verification pass like before
-        var unrecoverable: [Int] = []
+        var unrecoverable = Set<Int>()
 
-        // Pass 1: write the WAV, remember a CRC per output sector.
-        let writer = try WAVWriter(url: context.wavURL, expectedDataBytes: totalSectors * 2352)
-        defer { writer.abandonIfOpen() }
-        var sectorCRCs = [UInt32]()
-        sectorCRCs.reserveCapacity(totalSectors)
-
-        var outputSector = 0
-        while outputSector < totalSectors {
-            try Task.checkCancellation()
-            try await health.checkDeadline()
-            let chunk = min(config.chunkSectors, totalSectors - outputSector)
-            let byteRange = context.window(ofOutputSectors: outputSector ..< outputSector + chunk)
-            let result = try await readChunk(for: byteRange, health: health, withC2: false)
-            unrecoverable.append(contentsOf: result.unrecoverableSectors)
-            try writer.append(result.audio)
-            for s in 0 ..< chunk {
-                sectorCRCs.append(CRC32.checksum(result.audio.subdata(
-                    in: result.audio.startIndex + s * 2352 ..< result.audio.startIndex + (s + 1) * 2352
-                )))
-            }
-            outputSector += chunk
-            context.progress(RipProgress(
-                trackNumber: context.track.number,
-                sectorsCompleted: outputSector,
-                totalSectors: progressTotal,
-                rereads: 0
-            ))
-        }
-        try writer.finish()
+        let sectorCRCs = try await writePass(context, health: health, unrecoverable: &unrecoverable)
 
         // Force the second pass to the medium even for tracks smaller than
         // the drive cache.
-        await flushCache(near: context.sectors.lowerBound)
+        await reader.flushCache(near: context.sectors.lowerBound)
 
-        // Pass 2: re-read, compare, settle and patch mismatches.
-        let patcher = try FileHandle(forWritingTo: context.wavURL)
-        defer { try? patcher.close() }
+        let (patched, rereads) = try await comparePass(
+            context, against: sectorCRCs, secure: secure, health: health, unrecoverable: &unrecoverable
+        )
 
-        outputSector = 0
-        while outputSector < totalSectors {
-            try Task.checkCancellation()
-            try await health.checkDeadline()
-            let chunk = min(config.chunkSectors, totalSectors - outputSector)
-            let byteRange = context.window(ofOutputSectors: outputSector ..< outputSector + chunk)
-            let result = try await readChunk(for: byteRange, health: health, withC2: false)
-
-            for s in 0 ..< chunk {
-                let secondBytes = result.audio.subdata(
-                    in: result.audio.startIndex + s * 2352 ..< result.audio.startIndex + (s + 1) * 2352
-                )
-                let index = outputSector + s
-                guard CRC32.checksum(secondBytes) != sectorCRCs[index] else { continue }
-
-                let settled = try await settleWindow(
-                    context.window(ofOutputSector: index),
-                    initialCandidate: secondBytes,
-                    maxRetries: maxRetries,
-                    agreeingPasses: agreeingPasses,
-                    health: health
-                )
-                rereads += settled.rereads
-                if !settled.recovered {
-                    unrecoverable.append(context.sectors.lowerBound + index)
-                }
-                try patcher.seek(toOffset: UInt64(44 + index * 2352))
-                try patcher.write(contentsOf: settled.audio)
-            }
-
-            outputSector += chunk
-            context.progress(RipProgress(
-                trackNumber: context.track.number,
-                sectorsCompleted: totalSectors + outputSector,
-                totalSectors: progressTotal,
-                rereads: rereads - 1
-            ))
-        }
-
-        // Checksums over the final, patched audio.
-        let reader = try FileHandle(forReadingFrom: context.wavURL)
-        defer { try? reader.close() }
-        try reader.seek(toOffset: 44)
-        while let data = try reader.read(upToCount: 4 << 20), !data.isEmpty {
-            context.checksums.update(data)
-            context.onAudio?(data)
-        }
+        // Checksums over the final audio. Pass 1 could have accumulated them
+        // on the fly, but patched sectors would invalidate that; re-reading
+        // the file costs a fraction of a second.
+        try checksumFile(&context, patched: patched)
 
         return RippedTrack(
             trackNumber: context.track.number,
             wavURL: context.wavURL,
             checksums: context.checksums.finalize(),
             rereads: rereads,
-            unrecoverableSectors: Array(Set(unrecoverable)).sorted(),
-            usedC2: false
+            unrecoverableSectors: unrecoverable.sorted(),
+            usedC2: false,
+            c2Unreliable: c2Unreliable
         )
     }
 
-    // MARK: Resilient device reads
+    /// Pass 1: writes the WAV and returns a CRC per output sector.
+    private func writePass(
+        _ context: TrackContext, health: RipHealth, unrecoverable: inout Set<Int>
+    ) async throws -> [UInt32] {
+        let totalSectors = context.sectors.count
+        let writer = try WAVWriter(url: context.wavURL, expectedDataBytes: totalSectors * Self.bytesPerSector)
+        defer { writer.abandonIfOpen() }
+        var sectorCRCs = [UInt32]()
+        sectorCRCs.reserveCapacity(totalSectors)
+        var bad = Set<Int>()
 
-    /// Reads a sector range, surviving unreadable sectors.
-    ///
-    /// The cost model: a read that *fails* costs the drive's entire internal
-    /// retry storm (1–2 minutes on some drives), so the budget is failing
-    /// contacts, not sectors. Healthy spans are read with exponentially
-    /// growing requests; damage is crossed by zero-filling exponentially
-    /// growing blocks at one failing probe each, with the final block
-    /// retro-bisected so run boundaries stay sector-exact. Confirmed runs
-    /// are remembered and never touched again (pass 2, settles).
-    private func resilientRead(
-        _ sectors: Range<Int>, areas: SectorAreas, health: RipHealth
-    ) async throws -> (data: Data, unrecoverable: [Int]) {
-        let knownBad = await damage.knownBadRuns(intersecting: sectors)
-
-        // A charted run ending exactly at our start means the scratch
-        // continues into this request: skip the doomed whole-range attempts
-        // and resume crossing it with large blocks immediately.
-        if sectors.lowerBound > readableSectors.lowerBound {
-            let touching = await damage.knownBadRuns(
-                intersecting: (sectors.lowerBound - 1) ..< sectors.lowerBound
-            )
-            if touching.contains(where: { $0.upperBound == sectors.lowerBound }) {
-                return try await mapDamage(
-                    sectors, areas: areas, health: health, knownBad: knownBad, continuingRun: true
-                )
+        try await forEachChunk(
+            context, health: health, withC2: false, progressOffset: 0, progressTotal: totalSectors * 2
+        ) { _, result in
+            bad.formUnion(result.unrecoverableSectors)
+            try writer.append(result.audio)
+            for sector in Self.sectorSlices(of: result.audio) {
+                sectorCRCs.append(CRC32.checksum(sector))
             }
+            return 0
         }
-
-        // Fast path: no known damage inside — try the whole range.
-        if knownBad.isEmpty {
-            let started = ContinuousClock.now
-            if let buffer = try? await device.readSectors(sectors, areas: areas) {
-                // Success, but slower than the drive's own retry storm
-                // allows: drop to low speed for the rest of the track.
-                if ContinuousClock.now - started > Self.struggleThreshold,
-                   await health.noteStruggle() {
-                    try? await device.setSpeed(Self.damagedRegionSpeed)
-                }
-                return (buffer.data, [])
-            }
-            if await health.noteStruggle() {
-                try? await device.setSpeed(Self.damagedRegionSpeed)
-                // One retry of the whole range at low speed.
-                if let buffer = try? await device.readSectors(sectors, areas: areas) {
-                    return (buffer.data, [])
-                }
-            }
-        }
-
-        return try await mapDamage(sectors, areas: areas, health: health, knownBad: knownBad)
+        try writer.finish()
+        unrecoverable.formUnion(bad)
+        return sectorCRCs
     }
 
-    private func mapDamage(
-        _ sectors: Range<Int>,
-        areas: SectorAreas,
+    /// Pass 2: re-reads, compares against pass 1, settles mismatches by
+    /// voting and patches them into the WAV. Returns whether anything was
+    /// patched and the number of re-reads spent.
+    private func comparePass(
+        _ context: TrackContext,
+        against sectorCRCs: [UInt32],
+        secure: SecureParams,
         health: RipHealth,
-        knownBad: [Range<Int>],
-        continuingRun: Bool = false
-    ) async throws -> (data: Data, unrecoverable: [Int]) {
-        let stride = areas.bytesPerSector
-        var out = Data(count: sectors.count * stride) // zero-filled canvas
-        var bad: [Int] = []
+        unrecoverable: inout Set<Int>
+    ) async throws -> (patched: Bool, rereads: Int) {
+        let totalSectors = context.sectors.count
+        let patcher = try FileHandle(forWritingTo: context.wavURL)
+        defer { try? patcher.close() }
+        var rereads = 0
+        var patched = false
+        var bad = Set<Int>()
 
-        func fill(_ buffer: SectorBuffer, at lba: Int) {
-            let dest = (lba - sectors.lowerBound) * stride
-            out.replaceSubrange(dest ..< dest + buffer.data.count, with: buffer.data)
-        }
+        try await forEachChunk(
+            context, health: health, withC2: false, progressOffset: totalSectors, progressTotal: totalSectors * 2
+        ) { outputSector, result in
+            for (offset, secondRead) in Self.sectorSlices(of: result.audio).enumerated() {
+                let index = outputSector + offset
+                guard CRC32.checksum(secondRead) != sectorCRCs[index] else { continue }
 
-        var cursor = sectors.lowerBound
-        var goodStep = 8
-        var consecutiveGoodSingles = 0
-        // When continuing a charted scratch, cross it one large block per
-        // failing probe instead of rediscovering it chunk by chunk.
-        var startInBadMode = continuingRun
-
-        while cursor < sectors.upperBound {
-            try Task.checkCancellation()
-            try await health.checkDeadline()
-            // Confirmed damage: zero-fill without touching the device.
-            if let run = knownBad.first(where: { $0.contains(cursor) }) {
-                let span = cursor ..< min(run.upperBound, sectors.upperBound)
-                bad.append(contentsOf: span)
-                cursor = span.upperBound
-                continue
-            }
-            let nextKnownBad = knownBad.map(\.lowerBound).filter { $0 > cursor }.min()
-                ?? sectors.upperBound
-
-            if startInBadMode {
-                startInBadMode = false
-                let crossed = try await crossBadRun(
-                    from: cursor, in: sectors, areas: areas,
-                    initialBlock: 64, blockCap: 256,
-                    health: health,
-                    out: &out, bad: &bad
+                let settled = try await settleWindow(
+                    context.window(ofOutputSector: index),
+                    initialCandidate: secondRead,
+                    secure: secure,
+                    health: health
                 )
-                cursor = crossed
-                goodStep = 8
-                consecutiveGoodSingles = 0
-                continue
-            }
-
-            let n = min(goodStep, nextKnownBad - cursor, sectors.upperBound - cursor)
-            if let buffer = try? await device.readSectors(cursor ..< cursor + n, areas: areas) {
-                fill(buffer, at: cursor)
-                cursor += n
-                if goodStep == 1 {
-                    consecutiveGoodSingles += 1
-                    if consecutiveGoodSingles >= 16 { goodStep = 8 }
-                } else {
-                    goodStep = min(goodStep * 2, config.chunkSectors)
+                rereads += settled.rereads
+                if !settled.recovered {
+                    bad.insert(context.sectors.lowerBound + index)
                 }
-                continue
+                try patcher.seek(toOffset: UInt64(WAVWriter.headerSize + index * Self.bytesPerSector))
+                try patcher.write(contentsOf: settled.audio)
+                patched = true
             }
-
-            if n > 1 {
-                // Damage somewhere in the block: single-step to find it
-                // (successes are cheap; only the actual hit is expensive).
-                goodStep = 1
-                consecutiveGoodSingles = 0
-                continue
-            }
-
-            // cursor is confirmed unreadable: cross the run with exponential
-            // zero-blocks, one failing probe per block.
-            cursor = try await crossBadRun(
-                from: cursor, in: sectors, areas: areas,
-                initialBlock: 1, blockCap: 32,
-                health: health,
-                out: &out, bad: &bad
-            )
-            goodStep = 1
-            consecutiveGoodSingles = 0
+            return rereads
         }
-
-        return (out, bad.sorted())
+        unrecoverable.formUnion(bad)
+        return (patched, rereads)
     }
 
-    /// Crosses a bad run starting at `from`: zero-fills exponentially
-    /// growing blocks at one failing probe each, retro-bisecting the final
-    /// block for a sector-exact boundary. Returns the new cursor.
-    private func crossBadRun(
-        from: Int,
-        in sectors: Range<Int>,
-        areas: SectorAreas,
-        initialBlock: Int,
-        blockCap: Int,
-        health: RipHealth,
-        out: inout Data,
-        bad: inout [Int]
-    ) async throws -> Int {
-        let stride = areas.bytesPerSector
-        var cursor = from
-        var zeroBlock = initialBlock
-        while cursor < sectors.upperBound {
-            try Task.checkCancellation()
-            try await health.checkDeadline()
-            let blockEnd = min(cursor + zeroBlock, sectors.upperBound)
-            bad.append(contentsOf: cursor ..< blockEnd)
-            let lastBlock = cursor ..< blockEnd
-            cursor = blockEnd
-            guard cursor < sectors.upperBound else { break }
-
-            if let probe = try? await device.readSectors(cursor ..< cursor + 1, areas: areas) {
-                let probeDest = (cursor - sectors.lowerBound) * stride
-                out.replaceSubrange(probeDest ..< probeDest + probe.data.count, with: probe.data)
-                cursor += 1
-                // The run ended inside the last zero block: recover its
-                // readable tail so the boundary is sector-exact.
-                let recovered = await recoverTail(of: lastBlock, areas: areas)
-                if let recovered {
-                    let dest = (recovered.from - sectors.lowerBound) * stride
-                    out.replaceSubrange(dest ..< dest + recovered.buffer.data.count, with: recovered.buffer.data)
-                    bad.removeAll { $0 >= recovered.from && $0 < lastBlock.upperBound }
-                }
-                let runEnd = recovered?.from ?? lastBlock.upperBound
-                await damage.recordBadRun(from ..< runEnd)
-                return cursor
-            }
-            zeroBlock = min(zeroBlock * 2, blockCap)
+    /// Streams the finished WAV through the checksum accumulator (and the
+    /// disc-level tap).
+    private func checksumFile(_ context: inout TrackContext, patched: Bool) throws {
+        let reader = try FileHandle(forReadingFrom: context.wavURL)
+        defer { try? reader.close() }
+        try reader.seek(toOffset: UInt64(WAVWriter.headerSize))
+        while let data = try reader.read(upToCount: 4 << 20), !data.isEmpty {
+            context.checksums.update(data)
+            context.onAudio?(data)
         }
-        // Run reaches the end of this request; it may continue into the
-        // next chunk (continuation mode picks it up there).
-        await damage.recordBadRun(from ..< sectors.upperBound)
-        return cursor
     }
 
-    /// Binary-searches the readable tail of a zero-filled block: the
-    /// smallest position whose suffix reads cleanly. Costs ≤ log₂(block)
-    /// contacts, only some of which fail.
-    private func recoverTail(
-        of block: Range<Int>, areas: SectorAreas
-    ) async -> (from: Int, buffer: SectorBuffer)? {
-        var low = block.lowerBound
-        var high = block.upperBound
-        while low < high {
-            let mid = (low + high) / 2
-            if (try? await device.readSectors(mid ..< block.upperBound, areas: areas)) != nil {
-                high = mid
-            } else {
-                low = mid + 1
-            }
+    /// The 2352-byte sector slices of a chunk of audio (no copies).
+    private static func sectorSlices(of audio: Data) -> [Data] {
+        stride(from: audio.startIndex, to: audio.endIndex, by: bytesPerSector).map { start in
+            audio[start ..< start + bytesPerSector]
         }
-        guard high < block.upperBound,
-              let buffer = try? await device.readSectors(high ..< block.upperBound, areas: areas)
-        else { return nil }
-        return (high, buffer)
     }
 
     // MARK: Chunk reads
 
-    private struct ChunkResult {
-        var audio: Data
-        var rereads: Int
-        var unrecoverableSectors: [Int]
-    }
-
     /// Returns the bytes of the virtual disc byte stream for `byteRange`,
     /// zero-filled where the range falls outside the readable sector bounds.
-    /// In C2 mode, flagged sectors are settled inline.
-    private func readChunk(for byteRange: Range<Int>, health: RipHealth, withC2: Bool) async throws -> ChunkResult {
-        let bps = Self.bytesPerSector
-        let firstSector = byteRange.lowerBound.flooredDivision(by: bps)
-        let lastSector = (byteRange.upperBound + bps - 1).flooredDivision(by: bps)
-        let span = firstSector ..< lastSector
-        let clamped = span.clamped(to: readableSectors)
-
-        var raw = Data(count: span.count * bps)
-        var rereads = 0
-        var unrecoverable: [Int] = []
-
-        if !clamped.isEmpty {
-            let read: ChunkResult
-            if case .secure(let maxRetries, let agreeingPasses) = config.mode, withC2 {
-                read = try await readWithC2(
-                    sectors: clamped, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
-                )
-            } else {
-                let resilient = try await resilientRead(clamped, areas: .user, health: health)
-                read = ChunkResult(
-                    audio: resilient.data, rereads: 0, unrecoverableSectors: resilient.unrecoverable
-                )
-            }
-            rereads = read.rereads
-            unrecoverable = read.unrecoverableSectors
-            let dest = (clamped.lowerBound - firstSector) * bps
-            raw.replaceSubrange(dest ..< dest + read.audio.count, with: read.audio)
+    /// With `c2` set, the drive's error pointers are requested and flagged
+    /// sectors are settled inline.
+    private func readChunk(for byteRange: Range<Int>, health: RipHealth, c2: SecureParams?) async throws -> ChunkResult {
+        let span = SectorSpan(covering: byteRange, readableSectors: readableSectors)
+        guard !span.readable.isEmpty else {
+            return ChunkResult(audio: Data(count: byteRange.count), rereads: 0, unrecoverableSectors: [])
         }
 
-        let sliceStart = byteRange.lowerBound - firstSector * bps
+        let read: ChunkResult
+        if let secure = c2 {
+            read = try await readWithC2(sectors: span.readable, secure: secure, health: health)
+        } else {
+            let resilient = try await reader.read(span.readable, areas: .user, health: health)
+            read = ChunkResult(audio: resilient.data, rereads: 0, unrecoverableSectors: resilient.unrecoverable)
+        }
         return ChunkResult(
-            audio: raw.subdata(in: sliceStart ..< sliceStart + byteRange.count),
-            rereads: rereads,
-            unrecoverableSectors: unrecoverable
+            audio: span.window(fromReadableAudio: read.audio),
+            rereads: read.rereads,
+            unrecoverableSectors: read.unrecoverableSectors
         )
     }
 
-    private func readWithC2(
-        sectors: Range<Int>, maxRetries: Int, agreeingPasses: Int, health: RipHealth
-    ) async throws -> ChunkResult {
+    private func readWithC2(sectors: Range<Int>, secure: SecureParams, health: RipHealth) async throws -> ChunkResult {
         let areas: SectorAreas = [.user, .errorFlags]
-        let resilient = try await resilientRead(sectors, areas: areas, health: health)
+        let resilient = try await reader.read(sectors, areas: areas, health: health)
         let buffer = SectorBuffer(sectorCount: sectors.count, areas: areas, data: resilient.data)
 
         // Sanity-check the flag rate before acting on a single flag: an
         // implausible rate means the drive's C2 is lying, and settling
         // lie-flagged sectors would grind the mechanism for nothing.
-        let flagged = (0 ..< sectors.count).count { buffer.hasC2Error(sector: $0) }
-        if await health.noteC2(flagged: flagged, of: sectors.count) {
+        let flagged = buffer.c2FlaggedSectors()
+        if await health.noteC2(flagged: flagged.count, of: sectors.count) {
             throw C2DistrustError()
         }
 
         var audio = Data(capacity: sectors.count * Self.bytesPerSector)
         var rereads = 0
-        var unrecoverable = resilient.unrecoverable
+        var unrecoverable = Set(resilient.unrecoverable)
 
         for index in 0 ..< sectors.count {
             let lba = sectors.lowerBound + index
             // Sectors zero-filled by the resilient read are already reported.
-            if buffer.hasC2Error(sector: index), !unrecoverable.contains(lba) {
-                let settled = try await settleSector(
-                    lba: lba, maxRetries: maxRetries, agreeingPasses: agreeingPasses, health: health
-                )
+            if flagged.contains(index), !unrecoverable.contains(lba) {
+                let settled = try await settleSector(lba: lba, secure: secure, health: health)
                 rereads += settled.rereads
-                if !settled.recovered { unrecoverable.append(lba) }
+                if !settled.recovered { unrecoverable.insert(lba) }
                 audio.append(settled.audio)
             } else {
                 audio.append(buffer.audio(sector: index))
             }
         }
-        return ChunkResult(audio: audio, rereads: rereads, unrecoverableSectors: unrecoverable)
+        return ChunkResult(audio: audio, rereads: rereads, unrecoverableSectors: unrecoverable.sorted())
     }
 
     // MARK: Settling
 
-    private struct SettledData {
-        var audio: Data
-        var rereads: Int
-        var recovered: Bool
-    }
-
-    /// Re-reads a single device sector (C2 path) until `agreeingPasses`
-    /// clean byte-identical reads agree. Cache-busts only when timing shows
-    /// the previous read was served from cache; caps the effort as soon as
-    /// the drive is visibly struggling (its internal retries dwarf ours).
-    private func settleSector(
-        lba: Int, maxRetries: Int, agreeingPasses: Int, health: RipHealth
-    ) async throws -> SettledData {
-        var counts: [Data: Int] = [:]
-        var rereads = 0
-        var effectiveMax = maxRetries
-        var previousWasCacheFast = true // the triggering read just cached this sector
-        let deadline = ContinuousClock.now + Self.settleTimeBudget
-
-        while rereads < effectiveMax, ContinuousClock.now < deadline {
-            try Task.checkCancellation()
-            try await health.checkDeadline()
-            if previousWasCacheFast {
-                await flushCache(near: lba)
-            }
-            let started = ContinuousClock.now
-            let buffer = try? await device.readSectors(lba ..< lba + 1, areas: [.user, .errorFlags])
-            let elapsed = ContinuousClock.now - started
-            rereads += 1
-            previousWasCacheFast = elapsed < Self.cacheFastThreshold
-
-            if elapsed > Self.struggleThreshold {
-                effectiveMax = min(effectiveMax, rereads + 1)
-                if await health.noteStruggle() {
-                    try? await device.setSpeed(Self.damagedRegionSpeed)
-                }
-            }
-
-            guard let buffer, !buffer.hasC2Error(sector: 0) else { continue }
-            let audio = buffer.audio(sector: 0)
-            let count = (counts[audio] ?? 0) + 1
-            counts[audio] = count
-            if count >= agreeingPasses {
-                return SettledData(audio: audio, rereads: rereads, recovered: true)
-            }
+    /// Re-reads a single device sector (C2 path) until clean reads agree.
+    private func settleSector(lba: Int, secure: SecureParams, health: RipHealth) async throws -> SettledData {
+        try await Settler(reader: reader).settle(
+            maxRetries: secure.maxRetries,
+            agreeingPasses: secure.agreeingPasses,
+            health: health,
+            placeholder: Data(count: Self.bytesPerSector),
+            flushNear: lba
+        ) {
+            guard let buffer = try? await device.readSectors(lba ..< lba + 1, areas: [.user, .errorFlags]),
+                  !buffer.hasC2Error(sector: 0)
+            else { return nil }
+            return buffer.audio(sector: 0)
         }
-
-        let best = counts.max { $0.value < $1.value }?.key ?? Data(count: Self.bytesPerSector)
-        return SettledData(audio: best, rereads: rereads, recovered: false)
     }
 
     /// Settles one corrected output-sector window (compare path): re-reads
-    /// its input span until `agreeingPasses` identical windows agree, with
-    /// the same timing-based cache busting and struggle caps.
+    /// its input span until identical windows agree.
     private func settleWindow(
-        _ byteRange: Range<Int>,
-        initialCandidate: Data?,
-        maxRetries: Int,
-        agreeingPasses: Int,
-        health: RipHealth
+        _ byteRange: Range<Int>, initialCandidate: Data, secure: SecureParams, health: RipHealth
     ) async throws -> SettledData {
-        var counts: [Data: Int] = [:]
-        if let initialCandidate { counts[initialCandidate] = 1 }
-        var rereads = 0
-        var effectiveMax = maxRetries
-        var previousWasCacheFast = true
-        let deadline = ContinuousClock.now + Self.settleTimeBudget
-
-        let bps = Self.bytesPerSector
-        let firstSector = byteRange.lowerBound.flooredDivision(by: bps)
-        let lastSector = (byteRange.upperBound + bps - 1).flooredDivision(by: bps)
-        let clamped = (firstSector ..< lastSector).clamped(to: readableSectors)
-
-        while rereads < effectiveMax, ContinuousClock.now < deadline {
-            try Task.checkCancellation()
-            try await health.checkDeadline()
-            if previousWasCacheFast {
-                await flushCache(near: max(firstSector, readableSectors.lowerBound))
-            }
-
-            var raw = Data(count: (lastSector - firstSector) * bps)
-            let started = ContinuousClock.now
-            let buffer = clamped.isEmpty ? nil : try? await device.readSectors(clamped, areas: .user)
-            let elapsed = ContinuousClock.now - started
-            rereads += 1
-            previousWasCacheFast = elapsed < Self.cacheFastThreshold
-
-            if elapsed > Self.struggleThreshold {
-                effectiveMax = min(effectiveMax, rereads + 1)
-                if await health.noteStruggle() {
-                    try? await device.setSpeed(Self.damagedRegionSpeed)
-                }
-            }
-
-            if let buffer {
-                let dest = (clamped.lowerBound - firstSector) * bps
-                let audio = buffer.allAudio()
-                raw.replaceSubrange(dest ..< dest + audio.count, with: audio)
-            } else if !clamped.isEmpty {
-                continue // read failed; retry counts toward the cap
-            }
-
-            let sliceStart = byteRange.lowerBound - firstSector * bps
-            let window = raw.subdata(in: sliceStart ..< sliceStart + byteRange.count)
-            let count = (counts[window] ?? 0) + 1
-            counts[window] = count
-            if count >= agreeingPasses {
-                return SettledData(audio: window, rereads: rereads, recovered: true)
-            }
+        let span = SectorSpan(covering: byteRange, readableSectors: readableSectors)
+        return try await Settler(reader: reader).settle(
+            maxRetries: secure.maxRetries,
+            agreeingPasses: secure.agreeingPasses,
+            health: health,
+            initialCandidate: initialCandidate,
+            placeholder: Data(count: byteRange.count),
+            flushNear: max(span.sectors.lowerBound, readableSectors.lowerBound)
+        ) {
+            if span.readable.isEmpty { return span.window(fromReadableAudio: Data()) }
+            guard let buffer = try? await device.readSectors(span.readable, areas: .user) else { return nil }
+            return span.window(fromReadableAudio: buffer.allAudio())
         }
-
-        let best = counts.max { $0.value < $1.value }?.key ?? Data(count: byteRange.count)
-        return SettledData(audio: best, rereads: rereads, recovered: false)
-    }
-
-    /// Evicts the drive's read cache with a *small* backseek — just beyond
-    /// the modeled cache window. Same flush effect as a cross-disc jump on
-    /// read-ahead caches, a fraction of the head travel.
-    private func flushCache(near lba: Int) async {
-        let area = readableSectors
-        guard area.count > 1 else { return }
-        var target = lba - Self.cacheFlushDistance
-        if target < area.lowerBound {
-            target = min(lba + Self.cacheFlushDistance, area.upperBound - 1)
-        }
-        _ = try? await device.readSectors(target ..< target + 1, areas: .user)
-    }
-}
-
-extension Int {
-    /// Floored division (rounds toward negative infinity), needed because
-    /// negative-offset byte positions must map to the preceding sector.
-    func flooredDivision(by divisor: Int) -> Int {
-        let q = self / divisor
-        return (self % divisor != 0 && (self < 0) != (divisor < 0)) ? q - 1 : q
     }
 }

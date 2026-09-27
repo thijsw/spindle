@@ -313,7 +313,7 @@ case "rip":
         }
         print(line)
     }
-    print(String(format: "Ripped in %.1fs. %@", -started.timeIntervalSinceNow, outcome.strategy))
+    print(String(format: "Ripped in %.1fs. %@", -started.timeIntervalSinceNow, outcome.summary))
 
     let log = RipLog(
         ripDate: started,

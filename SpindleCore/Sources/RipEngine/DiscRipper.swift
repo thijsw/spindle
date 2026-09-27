@@ -1,50 +1,41 @@
 import DiscDrive
 import Foundation
 
-/// Accumulates the disc-spanning CTDB CRC as tracks stream by, in rip order.
-final class DiscCRCBox: @unchecked Sendable {
-    private var crc: RangeGatedCRC32
-    private let lock = NSLock()
-
-    init(coveredBytes: Range<Int>, startBytePosition: Int) {
-        // The gate's position counter starts at 0; shift the window so byte 0
-        // of the stream corresponds to the first audio track's start.
-        crc = RangeGatedCRC32(
-            coveredBytes: (coveredBytes.lowerBound - startBytePosition)
-                ..< (coveredBytes.upperBound - startBytePosition)
-        )
-    }
-
-    func update(_ data: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        crc.update(data)
-    }
-
-    var value: UInt32 {
-        lock.lock()
-        defer { lock.unlock() }
-        return crc.value
-    }
-}
-
 /// Rips all audio tracks of a disc into a staging directory.
 public struct DiscRipper: Sendable {
     public let device: any CDDeviceIO
-    public let config: RipConfiguration
+    public let configuration: RipConfiguration
     /// Shared chart of unreadable runs; pass the same instance to related
     /// rips (e.g. verify-first burst + secure re-rip) so damage is probed
     /// exactly once per disc.
-    public let damage: TrackRipper.DamageMap
+    public let damage: DamageMap
 
     public init(
         device: any CDDeviceIO,
-        config: RipConfiguration,
-        damage: TrackRipper.DamageMap = TrackRipper.DamageMap()
+        configuration: RipConfiguration,
+        damage: DamageMap = DamageMap()
     ) {
         self.device = device
-        self.config = config
+        self.configuration = configuration
         self.damage = damage
+    }
+
+    public struct DiscRipResult: Sendable {
+        public let tracks: [RippedTrack]
+        /// CTDB whole-disc CRC32 (skip-gated), for matching entry `crc32`.
+        /// Only meaningful when the whole disc was ripped in one go.
+        public let ctdbDiscCRC32: UInt32
+        public let isCompleteDisc: Bool
+        /// Whether C2 was still trusted when the rip ended.
+        public let usedC2: Bool
+        /// True when the drive's C2 was caught lying during this rip;
+        /// remember this per drive and set `allowC2 = false` next time.
+        public let c2Unreliable: Bool
+        /// Tracks abandoned because they exceeded the per-track time budget.
+        public let failedTracks: [Int]
+        /// The request size the drive accepted; pass it to a follow-up rip
+        /// (`configuration.chunkSectors`) to skip re-probing.
+        public let tunedChunkSectors: Int
     }
 
     /// Probes whether the drive returns *usable* C2 error pointers.
@@ -62,92 +53,71 @@ public struct DiscRipper: Sendable {
         else { return false }
 
         guard withC2.allAudio() == plain.allAudio() else { return false }
-
-        let flagged = (0 ..< count).count { withC2.hasC2Error(sector: $0) }
-        return flagged < count / 4
+        return withC2.c2FlaggedSectors().count < count / 4
     }
 
-    public struct DiscRipResult: Sendable {
-        public let tracks: [RippedTrack]
-        /// CTDB whole-disc CRC32 (skip-gated), for matching entry `crc32`.
-        /// Only meaningful when the whole disc was ripped in one go.
-        public let ctdbDiscCRC32: UInt32
-        public let isCompleteDisc: Bool
-        public let usedC2: Bool
-        /// True when the drive's C2 was caught lying during this rip;
-        /// remember this per drive and set `allowC2 = false` next time.
-        public let c2Distrusted: Bool
-        /// Tracks abandoned because they exceeded the per-track time budget.
-        public let failedTracks: [Int]
+    /// Probes the largest transfer the drive accepts: halves the chunk size
+    /// until a read succeeds (some drives/bridges cap request sizes).
+    private func tunedChunkSectors(from start: Int, audioEnd: Int, areas: SectorAreas) async -> Int {
+        var chunk = configuration.chunkSectors
+        while chunk > 25 {
+            let range = start ..< min(start + chunk, audioEnd)
+            if (try? await device.readSectors(range, areas: areas)) != nil { break }
+            chunk /= 2
+        }
+        return chunk
     }
 
     /// Rips the disc's audio tracks; `only` restricts to a subset (used for
     /// secure re-rips of tracks that failed verification).
-    public func ripDisc(
+    public func rip(
         toc: TOC,
         only: Set<Int>? = nil,
         to stagingDirectory: URL,
         progress: @Sendable @escaping (RipProgress) -> Void = { _ in }
     ) async throws -> DiscRipResult {
         let audioTracks = toc.audioTracks
-        guard !audioTracks.isEmpty else { throw RipError.noAudioTracks }
+        guard let firstAudio = audioTracks.first else { throw RipError.noAudioTracks }
 
         try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
 
-        if let speed = config.speedKBps {
+        if let speed = configuration.speedKBps {
             try? await device.setSpeed(speed) // best effort; drives may refuse
         }
 
         var needsC2 = false
-        if case .secure = config.mode, config.allowC2 {
-            needsC2 = await probeC2(firstAudioLBA: audioTracks[0].startLBA)
+        if case .secure = configuration.mode, configuration.allowC2 {
+            needsC2 = await probeC2(firstAudioLBA: firstAudio.startLBA)
         }
 
         // The readable audio area ends at the lead-out of the session that
         // contains the audio (relevant for Enhanced CDs).
-        let audioSession = audioTracks[0].session
-        let audioEnd = toc.sessionLeadOuts[audioSession] ?? toc.leadOutLBA
-
-        // Probe the largest transfer the drive accepts: halve the chunk size
-        // until a read succeeds (some drives/bridges cap request sizes).
-        var tunedConfig = config
-        let probeAreas: SectorAreas = needsC2 ? [.user, .errorFlags] : .user
-        while tunedConfig.chunkSectors > 25 {
-            let start = audioTracks[0].startLBA
-            let range = start ..< min(start + tunedConfig.chunkSectors, audioEnd)
-            if (try? await device.readSectors(range, areas: probeAreas)) != nil { break }
-            tunedConfig.chunkSectors /= 2
-        }
-
-        // CTDB skip windows (see CTDBWindow — calibrated against the live
-        // database): one full stride is skipped at the disc start, and one
-        // stride plus the disc-length remainder before the lead-out, matching
-        // CUETools' "stridecount = total/stride − 2, minus one for leadin and
-        // one for leadout".
-        let totalSamples = audioEnd * 588
-        let ctdbPrefix = CTDBWindow.prefix
-        let ctdbSuffix = CTDBWindow.suffix(totalSamples: totalSamples)
-        let firstAudioStart = audioTracks[0].startLBA * 588
-        let discCRC = DiscCRCBox(
-            coveredBytes: (firstAudioStart + ctdbPrefix) * 4 ..< (totalSamples - ctdbSuffix) * 4,
-            startBytePosition: firstAudioStart * 4
+        let audioEnd = toc.audioLeadOutLBA
+        var tuned = configuration
+        tuned.chunkSectors = await tunedChunkSectors(
+            from: firstAudio.startLBA, audioEnd: audioEnd, areas: needsC2 ? [.user, .errorFlags] : .user
         )
 
+        // The disc-spanning CTDB CRC accumulates as tracks stream by, in rip
+        // order; it only means something when every track is ripped.
         let selected = audioTracks.filter { only?.contains($0.number) ?? true }
         let isCompleteDisc = selected.count == audioTracks.count
-        let tap: @Sendable (Data) -> Void = { discCRC.update($0) }
-        let audioTap: (@Sendable (Data) -> Void)? = isCompleteDisc ? tap : nil
+        var discCRC = CTDBWindow.discWindow(for: toc).map { window in
+            RangeGatedCRC32(
+                coveredBytes: (window.lowerBound - firstAudio.startLBA * SectorAreas.samplesPerSector) * 4
+                    ..< (window.upperBound - firstAudio.startLBA * SectorAreas.samplesPerSector) * 4
+            )
+        }
+        let audioTap: ((Data) -> Void)? = isCompleteDisc ? { discCRC?.update($0) } : nil
 
         var results: [RippedTrack] = []
-        var c2Distrusted = false
+        var c2Unreliable = false
         var failedTracks: [Int] = []
         for track in selected {
-            let wavURL = stagingDirectory.appendingPathComponent(
-                String(format: "track%02d.wav", track.number)
-            )
+            let wavURL = stagingDirectory.appendingPathComponent(String(format: "track%02d.wav", track.number))
             let ripper = TrackRipper(
                 device: device,
-                config: tunedConfig,
+                configuration: tuned,
                 readableSectors: 0 ..< audioEnd,
                 useC2: needsC2,
                 damage: damage
@@ -156,19 +126,16 @@ public struct DiscRipper: Sendable {
                 let ripped = try await ripper.rip(
                     track: track,
                     toc: toc,
-                    isFirstAudio: track.number == audioTracks.first?.number,
-                    isLastAudio: track.number == audioTracks.last?.number,
-                    ctdbLeadingSkip: track.number == audioTracks.first?.number ? ctdbPrefix : 0,
-                    ctdbTrailingSkip: track.number == audioTracks.last?.number ? ctdbSuffix : 0,
+                    position: TrackPosition(of: track, in: toc),
                     to: wavURL,
                     onAudio: audioTap,
                     progress: progress
                 )
                 results.append(ripped)
-                if ripped.c2Distrusted {
+                if ripped.c2Unreliable {
                     // The drive's C2 lied: stop using it for the rest of the disc.
                     needsC2 = false
-                    c2Distrusted = true
+                    c2Unreliable = true
                 }
             } catch RipError.trackTimeLimitExceeded {
                 // Give up on this track, keep the disc moving: the next
@@ -179,11 +146,12 @@ public struct DiscRipper: Sendable {
         }
         return DiscRipResult(
             tracks: results,
-            ctdbDiscCRC32: discCRC.value,
+            ctdbDiscCRC32: discCRC?.value ?? 0,
             isCompleteDisc: isCompleteDisc && failedTracks.isEmpty,
             usedC2: needsC2,
-            c2Distrusted: c2Distrusted,
-            failedTracks: failedTracks
+            c2Unreliable: c2Unreliable,
+            failedTracks: failedTracks,
+            tunedChunkSectors: tuned.chunkSectors
         )
     }
 }

@@ -40,13 +40,13 @@ private func wavData(_ url: URL) -> Data {
         var audio = Data(count: 10 * 588 * 4)
         audio[4] = 0x01 // sample index 1 (0-based), little-endian value 1
 
-        var acc = ChecksumAccumulator(totalSamples: 10 * 588, isFirstTrack: false, isLastTrack: false)
+        var acc = ChecksumAccumulator(totalSamples: 10 * 588, position: .middle)
         acc.update(audio)
         let sums = acc.finalize()
         #expect(sums.accurateRipV1 == 2, "AR v1 multiplies value by 1-based sample index")
         #expect(sums.accurateRipV2 == 2, "AR v2 equals v1 when no 32-bit overflow occurs")
 
-        var first = ChecksumAccumulator(totalSamples: 10 * 588, isFirstTrack: true, isLastTrack: false)
+        var first = ChecksumAccumulator(totalSamples: 10 * 588, position: TrackPosition(isFirst: true, isLast: false, discTotalSamples: 10 * 588))
         first.update(audio)
         #expect(first.finalize().accurateRipV1 == 0, "first track skips the first 5×588−1 samples")
     }
@@ -55,10 +55,10 @@ private func wavData(_ url: URL) -> Data {
         var audio = Data(count: 10 * 588 * 4)
         audio[4] = 0x01
 
-        var oneShot = ChecksumAccumulator(totalSamples: 10 * 588, isFirstTrack: false, isLastTrack: false)
+        var oneShot = ChecksumAccumulator(totalSamples: 10 * 588, position: .middle)
         oneShot.update(audio)
 
-        var pieces = ChecksumAccumulator(totalSamples: 10 * 588, isFirstTrack: false, isLastTrack: false)
+        var pieces = ChecksumAccumulator(totalSamples: 10 * 588, position: .middle)
         var rest = audio
         while !rest.isEmpty {
             let n = min(1337, rest.count)
@@ -78,8 +78,8 @@ private func wavData(_ url: URL) -> Data {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let device = MockCDDevice(leadOut: leadOut)
-        let ripper = DiscRipper(device: device, config: RipConfiguration(mode: .burst, chunkSectors: 25))
-        let tracks = try await ripper.ripDisc(toc: toc, to: dir).tracks
+        let ripper = DiscRipper(device: device, configuration: RipConfiguration(mode: .burst, chunkSectors: 25))
+        let tracks = try await ripper.rip(toc: toc, to: dir).tracks
 
         #expect(tracks.count == 2)
         #expect(wavData(tracks[0].wavURL) == expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 0, leadOut: leadOut))
@@ -96,7 +96,7 @@ private func wavData(_ url: URL) -> Data {
 
         let device = MockCDDevice(leadOut: leadOut)
         let config = RipConfiguration(mode: .burst, sampleOffset: 102, chunkSectors: 25)
-        let tracks = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir).tracks
+        let tracks = try await DiscRipper(device: device, configuration: config).rip(toc: toc, to: dir).tracks
 
         #expect(wavData(tracks[0].wavURL) == expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 102, leadOut: leadOut))
         #expect(wavData(tracks[1].wavURL) == expectedAudio(trackSectors: 150 ..< 400, sampleOffset: 102, leadOut: leadOut))
@@ -108,7 +108,7 @@ private func wavData(_ url: URL) -> Data {
 
         let device = MockCDDevice(leadOut: leadOut)
         let config = RipConfiguration(mode: .burst, sampleOffset: -30, chunkSectors: 25)
-        let tracks = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir).tracks
+        let tracks = try await DiscRipper(device: device, configuration: config).rip(toc: toc, to: dir).tracks
 
         #expect(wavData(tracks[0].wavURL) == expectedAudio(trackSectors: 0 ..< 150, sampleOffset: -30, leadOut: leadOut))
     }
@@ -122,7 +122,7 @@ private func wavData(_ url: URL) -> Data {
             201: .init(badReads: 5, flagsC2: true),
         ])
         let config = RipConfiguration(mode: .secure(maxRetries: 16, agreeingPasses: 2), chunkSectors: 25)
-        let tracks = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir).tracks
+        let tracks = try await DiscRipper(device: device, configuration: config).rip(toc: toc, to: dir).tracks
 
         #expect(tracks[0].usedC2 && tracks[1].usedC2, "C2 probe succeeded")
         #expect(wavData(tracks[0].wavURL) == expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 0, leadOut: leadOut))
@@ -140,7 +140,7 @@ private func wavData(_ url: URL) -> Data {
             77: .init(badReads: 4, flagsC2: false),
         ])
         let config = RipConfiguration(mode: .secure(maxRetries: 16, agreeingPasses: 2), chunkSectors: 25)
-        let tracks = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir).tracks
+        let tracks = try await DiscRipper(device: device, configuration: config).rip(toc: toc, to: dir).tracks
 
         #expect(!tracks[0].usedC2, "C2 probe correctly failed")
         #expect(wavData(tracks[0].wavURL) == expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 0, leadOut: leadOut))
@@ -154,7 +154,7 @@ private func wavData(_ url: URL) -> Data {
             10: .init(badReads: 1000, flagsC2: true),
         ])
         let config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2), chunkSectors: 25)
-        let tracks = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir).tracks
+        let tracks = try await DiscRipper(device: device, configuration: config).rip(toc: toc, to: dir).tracks
 
         #expect(tracks[0].unrecoverableSectors == [10])
     }
@@ -168,7 +168,7 @@ private func wavData(_ url: URL) -> Data {
         // is zero-filled, and the rip completes instead of aborting.
         let device = MockCDDevice(leadOut: leadOut, errorSectors: [90])
         let config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2), chunkSectors: 25)
-        let tracks = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir).tracks
+        let tracks = try await DiscRipper(device: device, configuration: config).rip(toc: toc, to: dir).tracks
 
         #expect(tracks[0].unrecoverableSectors == [90], "damaged sector reported")
 
@@ -194,7 +194,7 @@ private func wavData(_ url: URL) -> Data {
         let damage = 90 ..< 330
         let device = MockCDDevice(leadOut: leadOut, errorSectors: Set(damage))
         let config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2), chunkSectors: 150)
-        let result = try await DiscRipper(device: device, config: config).ripDisc(toc: toc, to: dir)
+        let result = try await DiscRipper(device: device, configuration: config).rip(toc: toc, to: dir)
 
         let allBad = result.tracks.flatMap(\.unrecoverableSectors).sorted()
         #expect(allBad == Array(damage), "exactly the damaged run reported, boundaries sector-exact")
@@ -225,12 +225,12 @@ private func wavData(_ url: URL) -> Data {
         // for the rest of the disc.
         let device = MockCDDevice(leadOut: leadOut, c2LiesAfterSector: 100)
         let config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2), chunkSectors: 150)
-        let result = try await DiscRipper(device: device, config: config)
-            .ripDisc(toc: toc, to: dir)
+        let result = try await DiscRipper(device: device, configuration: config)
+            .rip(toc: toc, to: dir)
 
-        #expect(result.c2Distrusted, "the lie was caught")
+        #expect(result.c2Unreliable, "the lie was caught")
         #expect(!result.usedC2, "C2 retired for the rest of the disc")
-        #expect(result.tracks[0].c2Distrusted, "track 1 was restarted in compare mode")
+        #expect(result.tracks[0].c2Unreliable, "track 1 was restarted in compare mode")
         #expect(!result.tracks[1].usedC2, "track 2 never used C2")
         #expect(
             result.tracks.allSatisfy { $0.unrecoverableSectors.isEmpty },
@@ -255,11 +255,11 @@ private func wavData(_ url: URL) -> Data {
         let device = MockCDDevice(leadOut: leadOut, c2LiesAfterSector: 0)
         var config = RipConfiguration(mode: .secure(maxRetries: 4, agreeingPasses: 2))
         config.allowC2 = false
-        let result = try await DiscRipper(device: device, config: config)
-            .ripDisc(toc: toc, to: dir)
+        let result = try await DiscRipper(device: device, configuration: config)
+            .rip(toc: toc, to: dir)
 
         #expect(!result.usedC2)
-        #expect(!result.c2Distrusted, "nothing to distrust — C2 was never consulted")
+        #expect(!result.c2Unreliable, "nothing to distrust — C2 was never consulted")
         #expect(
             wavData(result.tracks[0].wavURL) == expectedAudio(trackSectors: 0 ..< 150, sampleOffset: 0, leadOut: leadOut)
         )
@@ -282,7 +282,7 @@ private func wavData(_ url: URL) -> Data {
         )
         var config = RipConfiguration(mode: .burst, chunkSectors: 25)
         config.trackTimeLimit = .seconds(4)
-        let result = try await DiscRipper(device: device, config: config).ripDisc(toc: smallTOC, to: dir)
+        let result = try await DiscRipper(device: device, configuration: config).rip(toc: smallTOC, to: dir)
 
         #expect(result.failedTracks == [1], "track 1 abandoned")
         #expect(result.tracks.map(\.trackNumber) == [2], "track 2 still ripped")
@@ -302,9 +302,9 @@ private func wavData(_ url: URL) -> Data {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let device = MockCDDevice(leadOut: leadOut)
-        let ripper = DiscRipper(device: device, config: RipConfiguration(mode: .burst))
-        let a = try await ripper.ripDisc(toc: toc, to: dir.appendingPathComponent("a")).tracks
-        let b = try await ripper.ripDisc(toc: toc, to: dir.appendingPathComponent("b")).tracks
+        let ripper = DiscRipper(device: device, configuration: RipConfiguration(mode: .burst))
+        let a = try await ripper.rip(toc: toc, to: dir.appendingPathComponent("a")).tracks
+        let b = try await ripper.rip(toc: toc, to: dir.appendingPathComponent("b")).tracks
         #expect(a.map(\.checksums) == b.map(\.checksums))
     }
 }
