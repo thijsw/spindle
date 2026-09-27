@@ -13,7 +13,7 @@ import Verification
     /// Simulates a drive whose correction is `trueOffset`: a rip made at
     /// offset 0 contains, at stream sample p, the canonical sample p − d
     /// (zeros outside the disc).
-    @Test func findsTheTrueOffsetFromAnOffsetZeroRip() throws {
+    @Test func findsTheTrueOffsetFromAnOffsetZeroRip() async throws {
         let dir = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -60,7 +60,7 @@ import Verification
             trackCRC32s: trackCRCs, hasParity: false
         )
 
-        let candidates = try OffsetScanner.scan(
+        let candidates = try await OffsetScanner.scan(
             wavURLs: wavURLs,
             toc: toc,
             entries: [entry],

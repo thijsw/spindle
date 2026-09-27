@@ -271,6 +271,21 @@ public actor PipelineCoordinator {
             job.snapshot.finishedAt = Date()
         }
         publish(job)
+        if stage.isTerminal {
+            evictFinishedJobs()
+        }
+    }
+
+    /// A finished job's TOC, rip outcome and cover art (up to megabytes)
+    /// have no readers left: the UI keeps its own snapshots and the history
+    /// file its record. Keep only the most recent few for the dedup check.
+    private func evictFinishedJobs() {
+        let finished = jobs.values
+            .filter { $0.snapshot.stage.isTerminal }
+            .sorted { ($0.snapshot.finishedAt ?? .distantPast) < ($1.snapshot.finishedAt ?? .distantPast) }
+        for job in finished.dropLast(4) {
+            jobs.removeValue(forKey: job.id)
+        }
     }
 
     private func failJob(_ job: Job, _ message: String) async {

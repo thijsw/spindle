@@ -39,7 +39,7 @@ enum ScanOffsetCommand {
         print("\(entries.count) database entries. Scanning \(OffsetScanner.commonOffsets.count) candidate offsets…")
 
         let scanStarted = Date()
-        let candidates = try OffsetScanner.scan(wavURLs: wavURLs, toc: toc, entries: entries)
+        let candidates = try await OffsetScanner.scan(wavURLs: wavURLs, toc: toc, entries: entries)
         print(String(format: "Scanned in %.1fs.\n", -scanStarted.timeIntervalSinceNow))
 
         for candidate in candidates.prefix(5) {

@@ -17,21 +17,45 @@ final class SettingsStore {
     var preferences: Preferences {
         didSet {
             guard preferences != oldValue else { return }
-            do {
-                try PreferencesStore.save(preferences)
-            } catch {
-                Logger(subsystem: "nl.huell.spindle", category: "settings")
-                    .error("Could not save preferences: \(String(describing: error), privacy: .public)")
-            }
             onChange?(preferences)
+            scheduleSave()
         }
     }
 
     /// Called (off the observation graph) when preferences change, so the
     /// AppModel can forward them to the pipeline coordinator.
     @ObservationIgnored var onChange: ((Preferences) -> Void)?
+    @ObservationIgnored private var pendingSave: Task<Void, Never>?
 
     init(_ preferences: Preferences) {
         self.preferences = preferences
+    }
+
+    /// Text fields write on every keystroke; coalesce the disk writes and
+    /// keep them off the main thread.
+    private func scheduleSave() {
+        pendingSave?.cancel()
+        pendingSave = Task { [preferences] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            Self.write(preferences)
+        }
+    }
+
+    /// Writes any pending change immediately (call before quitting).
+    func flush() {
+        guard pendingSave != nil else { return }
+        pendingSave?.cancel()
+        pendingSave = nil
+        Self.write(preferences)
+    }
+
+    private static func write(_ preferences: Preferences) {
+        do {
+            try PreferencesStore.save(preferences)
+        } catch {
+            Logger(subsystem: "nl.huell.spindle", category: "settings")
+                .error("Could not save preferences: \(String(describing: error), privacy: .public)")
+        }
     }
 }

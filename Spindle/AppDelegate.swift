@@ -17,4 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.alertStyle = .warning
         return alert.runModal() == .alertFirstButtonReturn ? .terminateCancel : .terminateNow
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Self.activeModel?.settings.flush()
+    }
 }

@@ -1,6 +1,6 @@
 import DiscDrive
 import Foundation
-import RipEngine
+@testable import RipEngine
 import Testing
 
 /// Expected corrected audio for a track: the virtual disc byte stream
@@ -33,6 +33,24 @@ private func wavData(_ url: URL) -> Data {
 @Suite struct ChecksumTests {
     @Test func crc32MatchesStandardVector() {
         #expect(CRC32.checksum(Data("123456789".utf8)) == 0xCBF4_3926)
+    }
+
+    @Test func zlibCRCMatchesTheTableReferenceOverSlicesAndChunks() {
+        let bytes = Data((0 ..< 10_007).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+        #expect(CRC32.checksum(bytes) == CRC32.referenceChecksum(bytes))
+
+        let slice = bytes[13 ..< 9_871]
+        #expect(CRC32.checksum(slice) == CRC32.referenceChecksum(Data(slice)), "slices hash their own bytes")
+
+        var streaming = CRC32()
+        var rest = bytes[...]
+        while !rest.isEmpty {
+            let n = min(1_337, rest.count)
+            streaming.update(rest.prefix(n))
+            rest = rest.dropFirst(n)
+        }
+        #expect(streaming.value == CRC32.referenceChecksum(bytes), "chunking is transparent")
+        #expect(CRC32.checksum(Data()) == 0)
     }
 
     @Test func accurateRipSemantics() {

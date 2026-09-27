@@ -27,6 +27,17 @@ final class AppModel {
         let summary = JobPresentation.menuBarSummary(jobs: jobs)
         if summary != menuBarSummary { menuBarSummary = summary }
     }
+
+    /// Assigns only on real change: @Observable notifies on every write.
+    private func refreshActiveJobChrome() {
+        let job = activeJob
+        let id = job?.id
+        let hasCandidates = job.map { !$0.candidates.isEmpty } ?? false
+        let needsTags = job.map { $0.album == nil && jobsNeedingTags.contains($0.id) } ?? false
+        if activeJobID != id { activeJobID = id }
+        if activeJobHasCandidates != hasCandidates { activeJobHasCandidates = hasCandidates }
+        if activeJobNeedsTags != needsTags { activeJobNeedsTags = needsTags }
+    }
     private(set) var startupError: String?
 
     /// Preferences live in their own observable so the Settings window never
@@ -39,6 +50,14 @@ final class AppModel {
 
     /// Job whose release picker should be shown (nil hides the sheet).
     var pickerJobID: JobID?
+
+    /// Coarse view of the active job for the window chrome. The toolbar is
+    /// AppKit-bridged and rebuilding it on every 250 ms progress tick is
+    /// exactly the kind of churn that hung the app before, so it observes
+    /// only these, which change on stage transitions.
+    private(set) var activeJobID: JobID?
+    private(set) var activeJobHasCandidates = false
+    private(set) var activeJobNeedsTags = false
 
     /// Open manual tag-editing session (nil hides the sheet).
     var tagEditorSession: TagEditorSession?
@@ -132,6 +151,7 @@ final class AppModel {
                 coverArt[snapshot.id] = nil
             }
             refreshMenuBarSummary()
+            refreshActiveJobChrome()
             // Keep the Mac awake while any disc is in flight.
             if hasActiveJobs {
                 powerAssertion.activate()
@@ -145,6 +165,7 @@ final class AppModel {
 
         case .tagsNeeded(let jobID):
             jobsNeedingTags.insert(jobID)
+            refreshActiveJobChrome()
             if pickerJobID == nil, tagEditorSession == nil {
                 openTagEditor(jobID: jobID, candidateID: nil)
             }
@@ -212,6 +233,7 @@ final class AppModel {
         guard let session = tagEditorSession, let coordinator else { return }
         tagEditorSession = nil
         jobsNeedingTags.remove(session.jobID)
+        refreshActiveJobChrome()
         Task { await coordinator.provideTags(jobID: session.jobID, album: album) }
     }
 

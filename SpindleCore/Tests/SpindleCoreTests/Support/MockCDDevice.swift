@@ -1,5 +1,6 @@
 import DiscDrive
 import Foundation
+import os
 
 /// In-memory CD device for testing the rip engine. Audio content is a
 /// deterministic function of the absolute byte position, so any slice of the
@@ -55,9 +56,16 @@ actor MockCDDevice: CDDeviceIO {
         return UInt8(truncatingIfNeeded: x)
     }
 
+    /// Sectors are generated once and shared by every mock: byte-by-byte
+    /// generation in a debug build was the test suite's biggest cost.
+    private static let sectorCache = OSAllocatedUnfairLock<[Int: Data]>(initialState: [:])
+
     static func canonicalAudio(sector lba: Int) -> Data {
+        if let cached = sectorCache.withLock({ $0[lba] }) { return cached }
         let base = lba * 2352
-        return Data((0 ..< 2352).map { canonicalByte(at: base + $0) })
+        let audio = Data((0 ..< 2352).map { canonicalByte(at: base + $0) })
+        sectorCache.withLock { $0[lba] = audio }
+        return audio
     }
 
     func readSectors(_ range: Range<Int>, areas: SectorAreas) throws -> SectorBuffer {

@@ -6,7 +6,9 @@ import NIOCore
 /// Uploads to a remote server over SFTP (Citadel/SwiftNIO SSH).
 public actor SFTPDestination: Destination {
     private let config: SFTPConfig
-    private let secret: String? // password or key passphrase, from Keychain
+    /// Password or key passphrase; nil until loaded (see `secretSource`).
+    private var secret: String?
+    private let secretSource: @Sendable () -> String?
     private let hostKeyStore: HostKeyStore
     private var client: SSHClient?
     private var sftp: SFTPClient?
@@ -17,11 +19,19 @@ public actor SFTPDestination: Destination {
     public init(config: SFTPConfig, secret: String?, hostKeyStore: HostKeyStore = KeychainHostKeyStore()) {
         self.config = config
         self.secret = secret
+        self.secretSource = { nil }
         self.hostKeyStore = hostKeyStore
     }
 
+    /// Reads the secret from the Keychain on first connect, not at
+    /// construction: SecItemCopyMatching can block on a Keychain prompt and
+    /// must not run on whichever actor builds the destination.
     public init(config: SFTPConfig) {
-        self.init(config: config, secret: KeychainStore.load(account: config.keychainAccount))
+        self.config = config
+        self.secret = nil
+        let account = config.keychainAccount
+        self.secretSource = { KeychainStore.load(account: account) }
+        self.hostKeyStore = KeychainHostKeyStore()
     }
 
     // MARK: Connection
@@ -59,6 +69,9 @@ public actor SFTPDestination: Destination {
         if let sftp, sftp.isActive { return sftp }
 
         await dropConnection()
+        if secret == nil {
+            secret = secretSource()
+        }
 
         let validator = TOFUHostKeyValidator(host: config.host, port: config.port, store: hostKeyStore)
         do {
@@ -203,11 +216,22 @@ public actor SFTPDestination: Destination {
         )
 
         do {
+            // Keep one write in flight while the next chunk is read and
+            // sent, so a WAN round trip doesn't idle the link between chunks.
             var offset: UInt64 = 0
+            var inFlight: Task<Void, Error>?
             while let chunk = try input.read(upToCount: Self.chunkSize), !chunk.isEmpty {
-                try await handle.write(ByteBuffer(data: chunk), at: offset)
+                let writeOffset = offset
+                let write = Task { try await handle.write(ByteBuffer(data: chunk), at: writeOffset) }
                 offset += UInt64(chunk.count)
+                if let inFlight {
+                    try await inFlight.value
+                }
+                inFlight = write
                 progress?(TransferProgress(bytesSent: Int64(offset), totalBytes: totalBytes))
+            }
+            if let inFlight {
+                try await inFlight.value
             }
             try await handle.close()
         } catch {

@@ -51,7 +51,7 @@ public enum OffsetScanner {
         toc: TOC,
         entries: [CTDBEntry],
         candidates: [Int] = commonOffsets
-    ) throws -> [Candidate] {
+    ) async throws -> [Candidate] {
         let audioTracks = toc.audioTracks
         guard wavURLs.count == audioTracks.count, !entries.isEmpty else { return [] }
 
@@ -71,40 +71,58 @@ public enum OffsetScanner {
         // Absolute sample windows of each track's CTDB checksum at offset 0.
         let windows = CTDBWindow.trackWindows(for: toc)
 
-        var results: [Candidate] = []
-        for offset in candidates {
-            var verdicts: [Int: TrackVerdict] = [:]
-            var matched = 0
-            var confidence = 0
-
-            for (index, window) in windows.enumerated() {
-                let crc = streamCRC(
-                    stream: stream,
-                    sampleRange: (window.samples.lowerBound + offset) ..< (window.samples.upperBound + offset),
-                    firstSample: firstSample,
-                    totalSamples: totalSamples
-                )
-                let verdict = CTDBVerifier.verdict(trackIndex: index, crc: crc, entries: entries)
-                if case .accuratelyRipped(let trackConfidence) = verdict {
-                    matched += 1
-                    confidence += trackConfidence
+        // Candidates are independent: one CRC sweep over the disc each, so
+        // they spread across cores.
+        let results = await withTaskGroup(of: Candidate.self, returning: [Candidate].self) { group in
+            for offset in candidates {
+                group.addTask {
+                    evaluate(offset: offset, windows: windows, stream: stream, entries: entries,
+                             firstSample: firstSample, totalSamples: totalSamples)
                 }
-                verdicts[window.track.number] = verdict
             }
-
-            results.append(Candidate(
-                offset: offset,
-                matchedTracks: matched,
-                totalTracks: windows.count,
-                confidence: confidence,
-                trackVerdicts: verdicts
-            ))
+            var results: [Candidate] = []
+            for await candidate in group { results.append(candidate) }
+            return results
         }
 
         return results.sorted {
             ($0.matchedTracks, $0.confidence, -abs($0.offset))
                 > ($1.matchedTracks, $1.confidence, -abs($1.offset))
         }
+    }
+
+    private static func evaluate(
+        offset: Int,
+        windows: [CTDBWindow.TrackWindow],
+        stream: ConcatenatedBytes,
+        entries: [CTDBEntry],
+        firstSample: Int,
+        totalSamples: Int
+    ) -> Candidate {
+        var verdicts: [Int: TrackVerdict] = [:]
+        var matched = 0
+        var confidence = 0
+        for (index, window) in windows.enumerated() {
+            let crc = streamCRC(
+                stream: stream,
+                sampleRange: (window.samples.lowerBound + offset) ..< (window.samples.upperBound + offset),
+                firstSample: firstSample,
+                totalSamples: totalSamples
+            )
+            let verdict = CTDBVerifier.verdict(trackIndex: index, crc: crc, entries: entries)
+            if case .accuratelyRipped(let trackConfidence) = verdict {
+                matched += 1
+                confidence += trackConfidence
+            }
+            verdicts[window.track.number] = verdict
+        }
+        return Candidate(
+            offset: offset,
+            matchedTracks: matched,
+            totalTracks: windows.count,
+            confidence: confidence,
+            trackVerdicts: verdicts
+        )
     }
 
     /// CRC32 of the stream over an absolute sample range, zero-padding
@@ -123,12 +141,8 @@ public enum OffsetScanner {
             crc.update(Data(count: (readable.lowerBound - sampleRange.lowerBound) * 4))
         }
         if !readable.isEmpty {
-            var position = (readable.lowerBound - firstSample) * 4
-            let end = (readable.upperBound - firstSample) * 4
-            while position < end {
-                let chunk = min(4 << 20, end - position)
-                crc.update(stream.bytes(in: position ..< position + chunk))
-                position += chunk
+            stream.forEachSlice(in: (readable.lowerBound - firstSample) * 4 ..< (readable.upperBound - firstSample) * 4) {
+                crc.update($0)
             }
         }
         if sampleRange.upperBound > readable.upperBound {
@@ -139,7 +153,7 @@ public enum OffsetScanner {
 }
 
 /// Read-only random access over several Data chunks as one logical stream.
-struct ConcatenatedBytes {
+struct ConcatenatedBytes: @unchecked Sendable {
     private let chunks: [Data]
     private let offsets: [Int] // start offset of each chunk
     let count: Int
@@ -156,11 +170,12 @@ struct ConcatenatedBytes {
         self.count = total
     }
 
-    func bytes(in range: Range<Int>) -> Data {
+    /// Visits the bytes of `range` as raw slices of the underlying chunks,
+    /// in order, without copying (the chunks are memory-mapped WAVs).
+    func forEachSlice(in range: Range<Int>, _ body: (UnsafeRawBufferPointer) -> Void) {
         let clamped = range.clamped(to: 0 ..< count)
-        guard !clamped.isEmpty else { return Data() }
+        guard !clamped.isEmpty else { return }
 
-        var result = Data(capacity: clamped.count)
         // Binary search for the first chunk containing the range start.
         var index = offsets.lastIndexBefore(orAt: clamped.lowerBound)
         var position = clamped.lowerBound
@@ -168,11 +183,12 @@ struct ConcatenatedBytes {
             let chunk = chunks[index]
             let chunkStart = offsets[index]
             let local = (position - chunkStart) ..< min(chunk.count, clamped.upperBound - chunkStart)
-            result.append(chunk.subdata(in: chunk.startIndex + local.lowerBound ..< chunk.startIndex + local.upperBound))
+            chunk.withUnsafeBytes { raw in
+                body(UnsafeRawBufferPointer(rebasing: raw[local]))
+            }
             position = chunkStart + local.upperBound
             index += 1
         }
-        return result
     }
 }
 

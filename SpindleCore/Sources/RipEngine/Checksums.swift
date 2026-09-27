@@ -1,33 +1,58 @@
 import DiscDrive
 import Foundation
+import zlib
 
 /// Standard CRC-32 (zlib polynomial), used as Spindle's rip-stability checksum
 /// and by the CTDB/AccurateRip ecosystem.
+///
+/// Every ripped byte passes through this two or three times (track CRC,
+/// CTDB-gated CRC, disc CRC) and the offset scanner runs it ~30× per disc,
+/// so it delegates to the system zlib's slicing implementation over raw
+/// bytes instead of walking `Data` byte by byte.
 public struct CRC32: Sendable {
+    private var running: UInt = 0
+
+    public init() {}
+
+    public mutating func update(_ data: Data) {
+        data.withUnsafeBytes { update($0) }
+    }
+
+    public mutating func update(_ bytes: UnsafeRawBufferPointer) {
+        guard let base = bytes.baseAddress, !bytes.isEmpty else { return }
+        // zlib takes a 32-bit length; chunk anything larger.
+        var offset = 0
+        while offset < bytes.count {
+            let length = min(bytes.count - offset, Int(UInt32.max))
+            running = crc32(running, base.advanced(by: offset).assumingMemoryBound(to: Bytef.self), uInt(length))
+            offset += length
+        }
+    }
+
+    public var value: UInt32 { UInt32(truncatingIfNeeded: running) }
+
+    public static func checksum(_ data: Data) -> UInt32 {
+        var crc = CRC32()
+        crc.update(data)
+        return crc.value
+    }
+
+    /// Table-driven reference implementation, kept as the test oracle for
+    /// the zlib-backed path.
+    static func referenceChecksum(_ data: Data) -> UInt32 {
+        var state: UInt32 = 0xFFFF_FFFF
+        for byte in data {
+            state = table[Int((state ^ UInt32(byte)) & 0xFF)] ^ (state >> 8)
+        }
+        return state ^ 0xFFFF_FFFF
+    }
+
     private static let table: [UInt32] = (0 ..< 256).map { n in
         var c = UInt32(n)
         for _ in 0 ..< 8 {
             c = (c & 1 != 0) ? (0xEDB8_8320 ^ (c >> 1)) : (c >> 1)
         }
         return c
-    }
-
-    private var state: UInt32 = 0xFFFF_FFFF
-
-    public init() {}
-
-    public mutating func update(_ data: Data) {
-        for byte in data {
-            state = Self.table[Int((state ^ UInt32(byte)) & 0xFF)] ^ (state >> 8)
-        }
-    }
-
-    public var value: UInt32 { state ^ 0xFFFF_FFFF }
-
-    public static func checksum(_ data: Data) -> UInt32 {
-        var crc = CRC32()
-        crc.update(data)
-        return crc.value
     }
 }
 
@@ -147,7 +172,7 @@ struct RangeGatedCRC32: Sendable {
         let overlap = chunk.clamped(to: coveredBytes)
         guard !overlap.isEmpty else { return }
         let lower = data.startIndex + (overlap.lowerBound - chunk.lowerBound)
-        crc.update(data.subdata(in: lower ..< lower + overlap.count))
+        crc.update(data[lower ..< lower + overlap.count])
     }
 
     public var value: UInt32 { crc.value }
@@ -189,15 +214,15 @@ public struct ChecksumAccumulator: Sendable {
         crc.update(data)
         ctdb.update(data)
 
-        var buffer: Data
-        if pending.isEmpty {
-            buffer = data
-        } else {
+        // Chunks are sector multiples, so the pending tail is empty in
+        // practice; only an odd read (file re-read) pays for the concat.
+        var buffer = data
+        if !pending.isEmpty {
             buffer = pending
             buffer.append(data)
         }
         let usableBytes = buffer.count - buffer.count % 4
-        pending = buffer.suffix(buffer.count - usableBytes)
+        pending = usableBytes == buffer.count ? Data() : buffer.suffix(buffer.count - usableBytes)
 
         buffer.prefix(usableBytes).withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             for frame in 0 ..< usableBytes / 4 {

@@ -13,8 +13,8 @@ struct MainView: View {
                     systemImage: "exclamationmark.triangle",
                     description: Text(error)
                 )
-            } else if let job = model.activeJob {
-                ActiveJobView(job: job)
+            } else if let jobID = model.activeJobID {
+                ActiveJobView(jobID: jobID)
             } else {
                 IdleView()
             }
@@ -30,9 +30,9 @@ struct MainView: View {
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                if let job = model.activeJob, !job.candidates.isEmpty {
+                if let jobID = model.activeJobID, model.activeJobHasCandidates {
                     Button {
-                        model.pickerJobID = job.id
+                        model.pickerJobID = jobID
                     } label: {
                         Label("Choose album match", systemImage: "questionmark.circle.fill")
                             .foregroundStyle(.orange)
@@ -41,10 +41,9 @@ struct MainView: View {
                 }
             }
             ToolbarItem(placement: .automatic) {
-                if let job = model.activeJob, job.album == nil,
-                   model.jobsNeedingTags.contains(job.id) {
+                if let jobID = model.activeJobID, model.activeJobNeedsTags {
                     Button {
-                        model.openTagEditor(jobID: job.id, candidateID: nil)
+                        model.openTagEditor(jobID: jobID, candidateID: nil)
                     } label: {
                         Label("Edit album tags", systemImage: "square.and.pencil")
                             .foregroundStyle(.orange)
@@ -90,14 +89,27 @@ struct IdleView: View {
     }
 }
 
+/// The one view that re-renders on every progress tick: it looks the job up
+/// by ID so the window chrome around it doesn't.
 struct ActiveJobView: View {
     @Environment(AppModel.self) private var model
+    let jobID: JobID
+
+    var body: some View {
+        if let job = model.jobs.first(where: { $0.id == jobID }) {
+            ActiveJobContent(job: job, art: model.coverArt(for: jobID))
+        }
+    }
+}
+
+struct ActiveJobContent: View {
     let job: JobSnapshot
+    let art: NSImage?
 
     var body: some View {
         HStack(alignment: .top, spacing: 20) {
             VStack(alignment: .leading, spacing: 12) {
-                CoverArtView(image: model.coverArt(for: job.id))
+                CoverArtView(image: art)
                     .frame(width: 220, height: 220)
 
                 Text(job.album?.album ?? "Audio CD")
@@ -256,6 +268,9 @@ struct StatusBar: View {
 struct ReleasePickerSheet: View {
     @Environment(AppModel.self) private var model
     @State private var selection: String?
+    /// Taken once when the sheet opens: candidates don't change while it is
+    /// up, and reading `jobs` here would rebuild the list on every tick.
+    @State private var candidates: [ReleaseCandidate] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -265,7 +280,7 @@ struct ReleasePickerSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            List(model.pickerJob?.candidates ?? [], selection: $selection) { candidate in
+            List(candidates, selection: $selection) { candidate in
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text("\(candidate.artist) — \(candidate.title)")
@@ -311,7 +326,8 @@ struct ReleasePickerSheet: View {
         .padding(20)
         .frame(width: 560)
         .onAppear {
-            selection = model.pickerJob?.candidates.first?.releaseMBID
+            candidates = model.pickerJob?.candidates ?? []
+            selection = candidates.first?.releaseMBID
         }
     }
 
