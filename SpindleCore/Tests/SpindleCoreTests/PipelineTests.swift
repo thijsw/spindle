@@ -2,7 +2,7 @@ import DiscDrive
 import Foundation
 import Metadata
 import RipEngine
-import SpindleCore
+@testable import SpindleCore
 import Testing
 import Transfer
 import Verification
@@ -56,19 +56,31 @@ private final class MockDriveController: DriveControlling, @unchecked Sendable {
 
 private struct MockMetadata: MetadataProviding {
     let releases: [MBRelease]
+    /// Report the releases as a fuzzy TOC match instead of a DiscID hit.
+    var fuzzy = false
+    /// Simulated network latency, to control which stage reaches the
+    /// metadata gate first.
+    var delay: Duration?
 
     func lookup(disc: DiscTOC) async throws -> DiscLookupResult {
-        releases.isEmpty ? .none : .matched(releases)
+        if let delay { try await Task.sleep(for: delay) }
+        if releases.isEmpty { return .none }
+        return fuzzy ? .fuzzy(releases) : .matched(releases)
     }
 }
 
 private struct MockArt: ArtProviding {
+    /// Returned for any release that has an MBID; nil = "no art found".
+    var art: CoverArt?
+
     func fetchArt(
         releaseMBID: String?, releaseGroupMBID: String?, fallbackQuery: String?, size: CoverArtSize
     ) async -> CoverArt? {
-        nil
+        releaseMBID == nil ? nil : art
     }
 }
+
+private let mockArt = CoverArt(data: Data(repeating: 0xAB, count: 2048), mimeType: "image/jpeg", source: .coverArtArchive)
 
 private struct MockVerifier: RipVerifier {
     func verify(
@@ -119,7 +131,10 @@ private struct PipelineHarness {
     init(
         releases: [MBRelease],
         autoPick: Bool = true,
-        unmatchedDiscPolicy: Preferences.UnmatchedDiscPolicy = .tagAsUnknown
+        unmatchedDiscPolicy: Preferences.UnmatchedDiscPolicy = .tagAsUnknown,
+        fuzzy: Bool = false,
+        lookupDelay: Duration? = nil,
+        art: CoverArt? = nil
     ) throws {
         let base = try makeTempDir()
         self.base = base
@@ -136,8 +151,8 @@ private struct PipelineHarness {
         let dependencies = PipelineCoordinator.Dependencies(
             drive: drive,
             deviceFactory: { _ in MockCDDevice(leadOut: 400, tocData: tocData) },
-            metadata: MockMetadata(releases: releases),
-            art: MockArt(),
+            metadata: MockMetadata(releases: releases, fuzzy: fuzzy, delay: lookupDelay),
+            art: MockArt(art: art),
             verifier: MockVerifier(),
             destinationFactory: { config in
                 guard case .localFolder(let path) = config else { fatalError() }
@@ -177,8 +192,8 @@ private struct PipelineHarness {
         }
     }
 
-    func waitForCompletion() async -> Bool {
-        await waitForEvent { event in
+    func waitForCompletion(timeout: Duration = .seconds(30)) async -> Bool {
+        await waitForEvent(timeout: timeout) { event in
             if case .jobUpdated(let snapshot) = event, snapshot.stage == .completed { return true }
             return false
         } != nil
@@ -266,6 +281,80 @@ private struct PipelineHarness {
             ),
             "chosen release (not the top-ranked) used for tagging"
         )
+    }
+
+    /// Regression: identify() and the processing stage both wait for the
+    /// album choice. With a single continuation slot the second waiter
+    /// overwrote the first, so art was never fetched after a manual pick.
+    @Test func artArrivesAfterManualChoice() async throws {
+        let harness = try PipelineHarness(releases: mockReleases(count: 3), autoPick: false, art: mockArt)
+        defer { harness.tearDown() }
+
+        await harness.coordinator.start()
+        harness.drive.insert("mockdisk")
+
+        // Make sure BOTH stages are parked at the gate before answering:
+        // the picker request (identify) and the rip finishing (processing).
+        guard case .releaseChoiceNeeded(let jobID)? = await harness.waitForEvent(until: { event in
+            if case .releaseChoiceNeeded = event { return true }
+            return false
+        }) else {
+            Issue.record("picker was not requested")
+            return
+        }
+        let parked = await harness.waitForEvent { event in
+            if case .jobUpdated(let snapshot) = event, snapshot.stage == .awaitingMetadata { return true }
+            return false
+        }
+        #expect(parked != nil, "rip finished and the job waits for metadata")
+
+        await harness.coordinator.chooseRelease(jobID: jobID, candidateID: "REL-2")
+
+        let artEvent = await harness.waitForEvent(timeout: .seconds(10)) { event in
+            if case .artLoaded(let id, _) = event { return id == jobID }
+            return false
+        }
+        #expect(artEvent != nil, "cover art is fetched for the chosen release")
+        #expect(await harness.waitForCompletion(), "and the job still completes")
+    }
+
+    /// Regression (the other order): when the lookup is slower than the
+    /// rip, the processing stage reaches the gate first; the picker answer
+    /// must still wake it instead of leaving the job in awaitingMetadata.
+    @Test func slowLookupDoesNotStrandTheJob() async throws {
+        let harness = try PipelineHarness(
+            releases: mockReleases(count: 3), autoPick: false, lookupDelay: .milliseconds(800)
+        )
+        defer { harness.tearDown() }
+
+        await harness.coordinator.start()
+        harness.drive.insert("mockdisk")
+
+        guard case .releaseChoiceNeeded(let jobID)? = await harness.waitForEvent(until: { event in
+            if case .releaseChoiceNeeded = event { return true }
+            return false
+        }) else {
+            Issue.record("picker was not requested")
+            return
+        }
+        await harness.coordinator.chooseRelease(jobID: jobID, candidateID: "REL-1")
+        #expect(await harness.waitForCompletion(timeout: .seconds(15)), "job completes after the late choice")
+    }
+
+    /// A lone *fuzzy* (TOC search) hit is only a guess: with auto-pick off it
+    /// must go through the picker like any other candidate list.
+    @Test func singleFuzzyMatchRespectsAutoPickSetting() async throws {
+        let harness = try PipelineHarness(releases: mockReleases(count: 1), autoPick: false, fuzzy: true)
+        defer { harness.tearDown() }
+
+        await harness.coordinator.start()
+        harness.drive.insert("mockdisk")
+
+        let event = await harness.waitForEvent(timeout: .seconds(10)) { event in
+            if case .releaseChoiceNeeded = event { return true }
+            return false
+        }
+        #expect(event != nil, "fuzzy single match asks the user when auto-pick is off")
     }
 
     @Test func newDiscDuringUploadIsPickedUp() async throws {

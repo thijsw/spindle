@@ -3,26 +3,19 @@ import Foundation
 /// Streaming writer for 16-bit/44.1 kHz stereo little-endian WAV files —
 /// the staging format between ripping and encoding.
 public final class WAVWriter {
-    public enum WAVError: Error {
-        case cannotCreate(URL)
-    }
-
     private let handle: FileHandle
     private var dataBytes: UInt32 = 0
-    public let url: URL
+    private var isOpen = true
 
-    private static let headerSize = 44
+    /// Size of the canonical 44-byte PCM header; audio data starts here.
+    public static let headerSize = 44
 
     /// When the audio length is known in advance (it always is for a CD
     /// track), the final header is written immediately so the file is a
     /// valid, playable WAV even while the rip is still appending to it.
     public init(url: URL, expectedDataBytes: Int? = nil) throws {
         FileManager.default.createFile(atPath: url.path, contents: nil)
-        guard let handle = try? FileHandle(forWritingTo: url) else {
-            throw WAVError.cannotCreate(url)
-        }
-        self.handle = handle
-        self.url = url
+        self.handle = try FileHandle(forWritingTo: url)
         if let expectedDataBytes {
             try handle.write(contentsOf: Self.header(dataBytes: UInt32(expectedDataBytes)))
         } else {
@@ -38,7 +31,16 @@ public final class WAVWriter {
     public func finish() throws {
         try handle.seek(toOffset: 0)
         try handle.write(contentsOf: Self.header(dataBytes: dataBytes))
+        isOpen = false
         try handle.close()
+    }
+
+    /// Releases the file handle of a rip that was abandoned mid-track
+    /// (cancelled, over budget). Harmless after `finish()`.
+    public func abandonIfOpen() {
+        guard isOpen else { return }
+        isOpen = false
+        try? handle.close()
     }
 
     private static func header(dataBytes: UInt32) -> Data {

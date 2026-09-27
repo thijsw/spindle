@@ -20,7 +20,7 @@ public struct RipLog: Sendable {
     public var ripDuration: Duration?
 
     public init(
-        ripDate: Date,
+        ripDate: Date = Date(),
         appVersion: String = RipLog.currentAppVersion,
         drive: DriveIdentity?,
         configuration: RipConfiguration,
@@ -42,9 +42,7 @@ public struct RipLog: Sendable {
     }
 
     /// The bundle's marketing version ("dev" outside an app bundle).
-    public static var currentAppVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
-    }
+    public static var currentAppVersion: String { Spindle.version }
 
     public func render() -> String {
         var lines: [String] = []

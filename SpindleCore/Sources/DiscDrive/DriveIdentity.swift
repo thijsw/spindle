@@ -38,25 +38,23 @@ public struct DriveIdentity: Sendable, Hashable, Codable {
 /// A suggestion is exactly that: the UI labels it unverified until the user
 /// confirms it (or a CTDB match corroborates the rip).
 public enum DriveOffsetTable {
+    /// Typical value for the drive family; verify before trusting.
     public struct Suggestion: Sendable, Equatable {
         public let samples: Int
-        public let confidence: Confidence
-        public enum Confidence: Sendable, Equatable {
-            /// Typical value for the drive family; verify before trusting.
-            case vendorTypical
-        }
     }
 
-    private static let familyTypicalOffsets: [String: Int] = [
-        "MATSHITA": 102, // Panasonic
-        "HL-DT-ST": 6, // LG (incl. mechanisms inside Apple SuperDrives)
-        "TSSTCORP": 6, // Toshiba Samsung
-        "PLEXTOR": 30,
-        "PIONEER": 667,
-        "LITE-ON": 6,
-        "ASUS": 6,
-        "OPTIARC": 48, // Sony Optiarc
-        "SONY": 48,
+    /// Ordered: the first family whose name appears in the identity wins, so
+    /// a string mentioning two vendors resolves the same way every time.
+    private static let familyTypicalOffsets: [(family: String, samples: Int)] = [
+        ("MATSHITA", 102), // Panasonic
+        ("HL-DT-ST", 6), // LG (incl. mechanisms inside Apple SuperDrives)
+        ("TSSTCORP", 6), // Toshiba Samsung
+        ("PLEXTOR", 30),
+        ("PIONEER", 667),
+        ("LITE-ON", 6),
+        ("ASUS", 6),
+        ("OPTIARC", 48), // Sony Optiarc
+        ("SONY", 48),
     ]
 
     public static func suggestion(for identity: DriveIdentity) -> Suggestion? {
@@ -66,8 +64,8 @@ public enum DriveOffsetTable {
         let haystacks = [identity.mechanism ?? "", identity.vendor, identity.product]
             .map { $0.uppercased() }
         for haystack in haystacks where !haystack.isEmpty {
-            for (family, offset) in familyTypicalOffsets where haystack.contains(family) {
-                return Suggestion(samples: offset, confidence: .vendorTypical)
+            if let match = familyTypicalOffsets.first(where: { haystack.contains($0.family) }) {
+                return Suggestion(samples: match.samples)
             }
         }
         return nil

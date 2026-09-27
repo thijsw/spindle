@@ -2,6 +2,7 @@ import DiscDrive
 import Foundation
 import Metadata
 import Transfer
+import os
 
 // Dependency seams so the whole pipeline runs against mocks in tests.
 
@@ -59,28 +60,49 @@ public final class SystemDriveController: DriveControlling, @unchecked Sendable 
 }
 
 /// Small counting semaphore for bounding encode/transfer concurrency.
-public actor AsyncSemaphore {
-    private var available: Int
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+/// `signal()` is synchronous so a `defer` can release the slot without an
+/// extra task hop.
+public final class AsyncSemaphore: Sendable {
+    private struct State {
+        var available: Int
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state: OSAllocatedUnfairLock<State>
 
     public init(value: Int) {
-        self.available = value
+        self.state = OSAllocatedUnfairLock(initialState: State(available: value))
     }
 
     public func wait() async {
-        if available > 0 {
-            available -= 1
-            return
+        let acquired = state.withLock { state -> Bool in
+            guard state.available > 0 else { return false }
+            state.available -= 1
+            return true
         }
-        await withCheckedContinuation { waiters.append($0) }
+        if acquired { return }
+        await withCheckedContinuation { continuation in
+            // Re-check under the lock: a signal may have landed in between.
+            let resumeNow = state.withLock { state -> Bool in
+                if state.available > 0 {
+                    state.available -= 1
+                    return true
+                }
+                state.waiters.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
     }
 
     public func signal() {
-        if let next = waiters.first {
-            waiters.removeFirst()
-            next.resume()
-        } else {
-            available += 1
+        let next = state.withLock { state -> CheckedContinuation<Void, Never>? in
+            guard !state.waiters.isEmpty else {
+                state.available += 1
+                return nil
+            }
+            return state.waiters.removeFirst()
         }
+        next?.resume()
     }
 }

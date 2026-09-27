@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import Transfer
+@testable import Transfer
 
 @Suite struct LocalFolderDestinationTests {
     @Test func uploadRenameOverwriteAndTest() async throws {
@@ -64,5 +64,24 @@ import Transfer
         let data = try JSONEncoder().encode(sftp)
         let decoded = try JSONDecoder().decode(DestinationConfig.self, from: data)
         #expect(decoded == sftp, "config round-trips through JSON")
+    }
+}
+
+@Suite struct SFTPDestinationPathTests {
+    @Test func tildeAndTrailingSlashesNormalise() {
+        #expect(SFTPDestination.normalizedBase("~") == ".")
+        #expect(SFTPDestination.normalizedBase("~/music") == "music")
+        #expect(SFTPDestination.normalizedBase("/srv/music/") == "/srv/music")
+        #expect(SFTPDestination.normalizedBase("") == ".")
+        #expect(SFTPDestination.normalizedBase("/") == "/")
+        #expect(SFTPDestination.normalizedBase("music") == "music")
+    }
+
+    @Test func onlyConnectionAndUploadFailuresAreRetried() {
+        #expect(DestinationError.connectionFailed("timeout").isTransient)
+        #expect(DestinationError.uploadFailed(path: "a", reason: "b").isTransient)
+        #expect(!DestinationError.missingCredentials("me@nas:22").isTransient)
+        #expect(!DestinationError.hostKeyMismatch(host: "nas", expected: "a", actual: "b").isTransient)
+        #expect(!DestinationError.notWritable("/x").isTransient)
     }
 }

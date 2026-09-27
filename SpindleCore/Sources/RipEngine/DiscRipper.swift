@@ -179,9 +179,6 @@ public struct DiscRipper: Sendable {
                     c2Distrusted = true
                 }
             } catch RipError.trackTimeLimitExceeded {
-                if ProcessInfo.processInfo.environment["SPINDLE_DEBUG_BUDGET"] != nil {
-                    print("[budget] track \(track.number) exceeded; started rip loop at \(ContinuousClock.now)")
-                }
                 // Give up on this track, keep the disc moving: the next
                 // track usually starts on readable ground.
                 failedTracks.append(track.number)

@@ -40,12 +40,15 @@ private func validate(
     on loop: EmbeddedEventLoop
 ) -> Error? {
     let promise = loop.makePromise(of: Void.self)
-    var outcome: Result<Void, Error>?
-    promise.futureResult.whenComplete { outcome = $0 }
     validator.validateHostKey(hostKey: key, validationCompletePromise: promise)
     loop.run()
-    if case .failure(let error) = outcome { return error }
-    return nil
+    // The embedded loop has run to completion, so the future is settled.
+    do {
+        try promise.futureResult.wait()
+        return nil
+    } catch {
+        return error
+    }
 }
 
 @Suite struct HostKeyVerificationTests {

@@ -17,20 +17,51 @@ public final class DriveMonitor: @unchecked Sendable {
     private let session: DASession
     private let queue = DispatchQueue(label: "nl.huell.spindle.drivemonitor")
     private var heldDiscs: Set<String> = [] // guarded by queue
-    private var continuation: AsyncStream<DriveEvent>.Continuation?
+    private let continuation: AsyncStream<DriveEvent>.Continuation
 
     /// Disc appearance/disappearance events. Single-consumer.
-    public private(set) lazy var events: AsyncStream<DriveEvent> = {
-        AsyncStream { continuation in
-            queue.async { self.continuation = continuation }
+    public let events: AsyncStream<DriveEvent>
+
+    // The DiskArbitration callbacks are static so the same function pointers
+    // can be unregistered again in deinit.
+    private static let appeared: DADiskAppearedCallback = { disk, context in
+        guard let context else { return }
+        let monitor = Unmanaged<DriveMonitor>.fromOpaque(context).takeUnretainedValue()
+        if let name = DriveMonitor.bsdName(of: disk) {
+            monitor.continuation.yield(.discAppeared(bsdName: name))
         }
-    }()
+    }
+
+    private static let disappeared: DADiskDisappearedCallback = { disk, context in
+        guard let context else { return }
+        let monitor = Unmanaged<DriveMonitor>.fromOpaque(context).takeUnretainedValue()
+        if let name = DriveMonitor.bsdName(of: disk) {
+            monitor.continuation.yield(.discDisappeared(bsdName: name))
+        }
+    }
+
+    // Dissent mounts of any partition of a held disc (the cddafs volume
+    // appears on a slice like disk4s0 while we hold disk4).
+    private static let mountApproval: DADiskMountApprovalCallback = { disk, context in
+        guard let context else { return nil }
+        let monitor = Unmanaged<DriveMonitor>.fromOpaque(context).takeUnretainedValue()
+        guard let name = DriveMonitor.bsdName(of: disk) else { return nil }
+        let isHeld = monitor.heldDiscs.contains { name == $0 || name.hasPrefix($0 + "s") }
+        guard isHeld else { return nil }
+        let dissenter = DADissenterCreate(
+            kCFAllocatorDefault,
+            DAReturn(kDAReturnExclusiveAccess),
+            "Spindle is ripping this disc" as CFString
+        )
+        return Unmanaged.passRetained(dissenter)
+    }
 
     public init() throws {
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
-            throw DiscDriveError.ioctlFailed(name: "DASessionCreate", code: -1)
+            throw DiscDriveError.diskArbitrationUnavailable
         }
         self.session = session
+        (self.events, self.continuation) = AsyncStream.makeStream(of: DriveEvent.self)
         DASessionSetDispatchQueue(session, queue)
 
         let context = Unmanaged.passUnretained(self).toOpaque()
@@ -39,42 +70,18 @@ public final class DriveMonitor: @unchecked Sendable {
             kDADiskDescriptionMediaWholeKey as String: true,
         ] as CFDictionary
 
-        DARegisterDiskAppearedCallback(session, cdMatch, { disk, context in
-            guard let context else { return }
-            let monitor = Unmanaged<DriveMonitor>.fromOpaque(context).takeUnretainedValue()
-            if let name = DriveMonitor.bsdName(of: disk) {
-                monitor.continuation?.yield(.discAppeared(bsdName: name))
-            }
-        }, context)
-
-        DARegisterDiskDisappearedCallback(session, cdMatch, { disk, context in
-            guard let context else { return }
-            let monitor = Unmanaged<DriveMonitor>.fromOpaque(context).takeUnretainedValue()
-            if let name = DriveMonitor.bsdName(of: disk) {
-                monitor.continuation?.yield(.discDisappeared(bsdName: name))
-            }
-        }, context)
-
-        // Dissent mounts of any partition of a held disc (the cddafs volume
-        // appears on a slice like disk4s0 while we hold disk4).
-        DARegisterDiskMountApprovalCallback(session, nil, { disk, context -> Unmanaged<DADissenter>? in
-            guard let context else { return nil }
-            let monitor = Unmanaged<DriveMonitor>.fromOpaque(context).takeUnretainedValue()
-            guard let name = DriveMonitor.bsdName(of: disk) else { return nil }
-            let isHeld = monitor.heldDiscs.contains { name == $0 || name.hasPrefix($0 + "s") }
-            guard isHeld else { return nil }
-            let dissenter = DADissenterCreate(
-                kCFAllocatorDefault,
-                DAReturn(kDAReturnExclusiveAccess),
-                "Spindle is ripping this disc" as CFString
-            )
-            return Unmanaged.passRetained(dissenter)
-        }, context)
+        DARegisterDiskAppearedCallback(session, cdMatch, Self.appeared, context)
+        DARegisterDiskDisappearedCallback(session, cdMatch, Self.disappeared, context)
+        DARegisterDiskMountApprovalCallback(session, nil, Self.mountApproval, context)
     }
 
     deinit {
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        DAUnregisterCallback(session, unsafeBitCast(Self.appeared, to: UnsafeMutableRawPointer.self), context)
+        DAUnregisterCallback(session, unsafeBitCast(Self.disappeared, to: UnsafeMutableRawPointer.self), context)
+        DAUnregisterCallback(session, unsafeBitCast(Self.mountApproval, to: UnsafeMutableRawPointer.self), context)
         DASessionSetDispatchQueue(session, nil)
-        continuation?.finish()
+        continuation.finish()
     }
 
     private static func bsdName(of disk: DADisk) -> String? {

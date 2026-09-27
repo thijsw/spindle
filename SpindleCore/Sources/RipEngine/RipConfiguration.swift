@@ -87,13 +87,11 @@ public struct RippedTrack: Sendable {
 
 public enum RipError: Error, CustomStringConvertible, Sendable {
     case noAudioTracks
-    case cancelled
     case trackTimeLimitExceeded
 
     public var description: String {
         switch self {
         case .noAudioTracks: "The disc has no audio tracks"
-        case .cancelled: "Rip was cancelled"
         case .trackTimeLimitExceeded: "Track could not be ripped within the time limit"
         }
     }

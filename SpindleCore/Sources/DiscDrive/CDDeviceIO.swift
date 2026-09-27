@@ -28,9 +28,13 @@ public extension CDDeviceIO {
 public enum DiscDriveError: Error, CustomStringConvertible, Sendable {
     case openFailed(path: String, code: Int32)
     case ioctlFailed(name: String, code: Int32)
+    /// DiskArbitration refused to create a session (no drive watching possible).
+    case diskArbitrationUnavailable
 
     public var description: String {
         switch self {
+        case .diskArbitrationUnavailable:
+            "Could not connect to DiskArbitration to watch for discs"
         case .openFailed(let path, let code):
             "Could not open \(path): \(String(cString: strerror(code))) (errno \(code))"
         case .ioctlFailed(let name, let code):

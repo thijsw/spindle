@@ -78,9 +78,6 @@ public struct TrackRipper: Sendable {
         /// interrupted, so the budget is best-effort by one contact.
         func checkDeadline() throws {
             if let deadline, ContinuousClock.now > deadline {
-                if ProcessInfo.processInfo.environment["SPINDLE_DEBUG_BUDGET"] != nil {
-                    print("[budget] deadline \(deadline) exceeded at \(ContinuousClock.now)")
-                }
                 throw RipError.trackTimeLimitExceeded
             }
         }
@@ -162,9 +159,6 @@ public struct TrackRipper: Sendable {
         let health = RipHealth(
             deadline: config.trackTimeLimit.map { ContinuousClock.now + $0 }
         )
-        if ProcessInfo.processInfo.environment["SPINDLE_DEBUG_BUDGET"] != nil {
-            print("[budget] track \(track.number) rip starts at \(ContinuousClock.now), limit \(String(describing: config.trackTimeLimit))")
-        }
         var result: RippedTrack
         if case .secure(let maxRetries, let agreeingPasses) = config.mode {
             if useC2 {
@@ -221,6 +215,7 @@ public struct TrackRipper: Sendable {
         var context = context
         let totalSectors = context.sectors.count
         let writer = try WAVWriter(url: context.wavURL, expectedDataBytes: totalSectors * 2352)
+        defer { writer.abandonIfOpen() }
         var rereads = 0
         var unrecoverable: [Int] = []
 
@@ -275,6 +270,7 @@ public struct TrackRipper: Sendable {
 
         // Pass 1: write the WAV, remember a CRC per output sector.
         let writer = try WAVWriter(url: context.wavURL, expectedDataBytes: totalSectors * 2352)
+        defer { writer.abandonIfOpen() }
         var sectorCRCs = [UInt32]()
         sectorCRCs.reserveCapacity(totalSectors)
 
@@ -307,9 +303,7 @@ public struct TrackRipper: Sendable {
         await flushCache(near: context.sectors.lowerBound)
 
         // Pass 2: re-read, compare, settle and patch mismatches.
-        guard let patcher = try? FileHandle(forWritingTo: context.wavURL) else {
-            throw RipError.cancelled
-        }
+        let patcher = try FileHandle(forWritingTo: context.wavURL)
         defer { try? patcher.close() }
 
         outputSector = 0
@@ -350,7 +344,6 @@ public struct TrackRipper: Sendable {
                 rereads: rereads - 1
             ))
         }
-        try patcher.close()
 
         // Checksums over the final, patched audio.
         let reader = try FileHandle(forReadingFrom: context.wavURL)
@@ -448,7 +441,8 @@ public struct TrackRipper: Sendable {
         // failing probe instead of rediscovering it chunk by chunk.
         var startInBadMode = continuingRun
 
-        while cursor < sectors.upperBound, !Task.isCancelled {
+        while cursor < sectors.upperBound {
+            try Task.checkCancellation()
             try await health.checkDeadline()
             // Confirmed damage: zero-fill without touching the device.
             if let run = knownBad.first(where: { $0.contains(cursor) }) {
@@ -526,7 +520,8 @@ public struct TrackRipper: Sendable {
         let stride = areas.bytesPerSector
         var cursor = from
         var zeroBlock = initialBlock
-        while cursor < sectors.upperBound, !Task.isCancelled {
+        while cursor < sectors.upperBound {
+            try Task.checkCancellation()
             try await health.checkDeadline()
             let blockEnd = min(cursor + zeroBlock, sectors.upperBound)
             bad.append(contentsOf: cursor ..< blockEnd)

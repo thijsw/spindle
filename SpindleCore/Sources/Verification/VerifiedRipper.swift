@@ -26,6 +26,10 @@ public struct VerifiedRipper: Sendable {
         public var c2Unreliable: Bool
         /// Tracks abandoned because they exceeded the per-track time budget.
         public var failedTracks: [Int]
+        /// Why the checksum database could not be consulted (network, HTTP,
+        /// malformed response). Distinct from `verification == nil` with a
+        /// working database, which means "no verifier configured".
+        public var verificationError: String?
 
         public init(
             tracks: [RippedTrack],
@@ -33,7 +37,8 @@ public struct VerifiedRipper: Sendable {
             reRippedTracks: [Int],
             strategy: String,
             c2Unreliable: Bool,
-            failedTracks: [Int]
+            failedTracks: [Int],
+            verificationError: String? = nil
         ) {
             self.tracks = tracks
             self.verification = verification
@@ -41,6 +46,7 @@ public struct VerifiedRipper: Sendable {
             self.strategy = strategy
             self.c2Unreliable = c2Unreliable
             self.failedTracks = failedTracks
+            self.verificationError = verificationError
         }
     }
 
@@ -86,7 +92,7 @@ public struct VerifiedRipper: Sendable {
         let firstPass = try await DiscRipper(device: device, config: burstConfiguration, damage: damage)
             .ripDisc(toc: toc, to: stagingDirectory, progress: progress)
 
-        var verification = await verify(
+        var (verification, verificationError) = await verify(
             toc: toc, tracks: firstPass.tracks, discCRC: firstPass.ctdbDiscCRC32
         )
 
@@ -97,7 +103,8 @@ public struct VerifiedRipper: Sendable {
                 reRippedTracks: [],
                 strategy: "Fast rip" + (verification.map { " — \($0.summary)" } ?? ""),
                 c2Unreliable: firstPass.c2Distrusted,
-                failedTracks: firstPass.failedTracks
+                failedTracks: firstPass.failedTracks,
+                verificationError: verificationError
             )
         }
 
@@ -136,14 +143,14 @@ public struct VerifiedRipper: Sendable {
         unverified.removeAll { firstPass.failedTracks.contains($0) }
 
         if unverified.isEmpty {
-            let summary = verification?.summary ?? "not in CTDB"
             return Outcome(
                 tracks: firstPass.tracks,
                 verification: verification,
                 reRippedTracks: [],
-                strategy: "Fast rip, read clean — \(summary)",
+                strategy: "Fast rip, read clean — \(Self.summary(verification, verificationError))",
                 c2Unreliable: firstPass.c2Distrusted,
-                failedTracks: firstPass.failedTracks
+                failedTracks: firstPass.failedTracks,
+                verificationError: verificationError
             )
         }
 
@@ -156,25 +163,40 @@ public struct VerifiedRipper: Sendable {
         merged.sort { $0.trackNumber < $1.trackNumber }
 
         // Re-verify the final state (disc CRC is stale after partial re-rips).
-        verification = await verify(toc: toc, tracks: merged, discCRC: nil) ?? verification
+        // The first-pass verdicts are stale for the re-ripped tracks, so a
+        // failed re-check reports "unavailable" rather than keeping them.
+        (verification, verificationError) = await verify(toc: toc, tracks: merged, discCRC: nil)
 
-        let summary = verification?.summary ?? "not in CTDB"
-        let strategy = "Secure re-rip of \(unverified.count) track(s) with read errors — \(summary)"
+        let strategy = "Secure re-rip of \(unverified.count) track(s) with read errors — "
+            + Self.summary(verification, verificationError)
         return Outcome(
             tracks: merged,
             verification: verification,
             reRippedTracks: unverified,
             strategy: strategy,
             c2Unreliable: firstPass.c2Distrusted || secondPass.c2Distrusted,
-            failedTracks: (firstPass.failedTracks + secondPass.failedTracks).sorted()
+            failedTracks: (firstPass.failedTracks + secondPass.failedTracks).sorted(),
+            verificationError: verificationError
         )
     }
 
-    private func verify(toc: TOC, tracks: [RippedTrack], discCRC: UInt32?) async -> VerificationResult? {
-        guard let verifier else { return nil }
+    private static func summary(_ verification: VerificationResult?, _ error: String?) -> String {
+        verification?.summary ?? error.map { "CTDB unavailable (\($0))" } ?? "not in CTDB"
+    }
+
+    /// Consults the database; a failure is reported, not disguised as an
+    /// absent disc.
+    private func verify(
+        toc: TOC, tracks: [RippedTrack], discCRC: UInt32?
+    ) async -> (VerificationResult?, String?) {
+        guard let verifier else { return (nil, nil) }
         let checksums = tracks.reduce(into: [Int: TrackChecksums]()) {
             $0[$1.trackNumber] = $1.checksums
         }
-        return try? await verifier.verify(toc: toc, trackChecksums: checksums, ctdbDiscCRC32: discCRC)
+        do {
+            return (try await verifier.verify(toc: toc, trackChecksums: checksums, ctdbDiscCRC32: discCRC), nil)
+        } catch {
+            return (nil, String(describing: error))
+        }
     }
 }

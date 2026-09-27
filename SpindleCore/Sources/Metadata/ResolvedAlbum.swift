@@ -62,7 +62,25 @@ public struct ResolvedAlbum: Sendable, Hashable, Codable {
     }
 
     public var year: String? {
+        Self.year(of: date)
+    }
+
+    public var originalYear: String? {
+        Self.year(of: originalDate)
+    }
+
+    static func year(of date: String?) -> String? {
         date.flatMap { $0.count >= 4 ? String($0.prefix(4)) : nil }
+    }
+
+    /// Placeholder names used when neither MusicBrainz nor CD-TEXT knows the
+    /// disc. Art lookups by name must skip these: searching a store for
+    /// "Unknown Artist Unknown Album" returns somebody else's cover.
+    public static let unknownArtist = "Unknown Artist"
+    public static let unknownAlbumPrefix = "Unknown Album"
+
+    public var hasPlaceholderNames: Bool {
+        albumArtist == Self.unknownArtist || album.hasPrefix(Self.unknownAlbumPrefix)
     }
 }
 
@@ -107,7 +125,7 @@ extension ResolvedAlbum {
         guard let medium else { return nil }
 
         let credit = release.artistCredit ?? []
-        let albumArtist = credit.isEmpty ? "Unknown Artist" : credit.joinedName
+        let albumArtist = credit.isEmpty ? Self.unknownArtist : credit.joinedName
 
         let tracks: [ResolvedTrack] = (medium.tracks ?? []).enumerated().map { index, track in
             let trackCredit = track.recording?.artistCredit ?? credit
@@ -150,12 +168,12 @@ extension ResolvedAlbum {
             ResolvedTrack(
                 position: n,
                 title: cdText?.trackTitles[n] ?? String(format: "Track %02d", n),
-                artist: cdText?.trackPerformers[n] ?? cdText?.albumPerformer ?? "Unknown Artist"
+                artist: cdText?.trackPerformers[n] ?? cdText?.albumPerformer ?? unknownArtist
             )
         }
         return ResolvedAlbum(
-            album: cdText?.albumTitle ?? "Unknown Album (\(shortID))",
-            albumArtist: cdText?.albumPerformer ?? "Unknown Artist",
+            album: cdText?.albumTitle ?? "\(unknownAlbumPrefix) (\(shortID))",
+            albumArtist: cdText?.albumPerformer ?? unknownArtist,
             discID: discID,
             tracks: tracks
         )

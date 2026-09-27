@@ -5,7 +5,15 @@ import SwiftUI
 @main
 struct SpindleApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var model = AppModel()
+    @State private var model: AppModel
+
+    init() {
+        // The pipeline must watch the drive from launch — with the main
+        // window closed (menu-bar mode) there may never be a window `.task`.
+        let model = AppModel()
+        model.start()
+        _model = State(initialValue: model)
+    }
 
     // Owns the Sparkle updater for the app's lifetime. `startingUpdater: true`
     // begins the scheduled background checks (cadence from Info.plist).
@@ -17,7 +25,6 @@ struct SpindleApp: App {
             MainView()
                 .environment(model)
                 .frame(minWidth: 720, minHeight: 480)
-                .task { model.start() }
         }
         .defaultSize(width: 820, height: 560)
         .commands {

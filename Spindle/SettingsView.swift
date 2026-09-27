@@ -182,9 +182,11 @@ struct DestinationSettingsPane: View {
                 Text("Password").tag(false)
                 Text("SSH key file").tag(true)
             }
+            .onChange(of: usesKeyFile) { _, _ in applySFTP() }
             if usesKeyFile {
                 HStack {
                     TextField("Private key", text: $sftpKeyFile, prompt: Text("~/.ssh/id_ed25519"))
+                        .onSubmit(applySFTP)
                     Button("Choose…", action: chooseKeyFile)
                 }
                 SecureField("Key passphrase (if any)", text: $sftpPassword)
@@ -216,6 +218,7 @@ struct DestinationSettingsPane: View {
         Binding(
             get: { kind },
             set: { newKind in
+                guard newKind != kind else { return }
                 testResult = nil
                 switch newKind {
                 case .none:
@@ -363,12 +366,18 @@ struct RippingSettingsPane: View {
                         "Offset for \(driveName ?? driveKey) (samples)",
                         value: Binding(
                             get: { model.preferences.driveOffsets[driveKey] ?? 0 },
-                            set: { model.preferences.driveOffsets[driveKey] = $0 }
+                            set: { newValue in
+                                // SwiftUI drives setters at display rate; an
+                                // unchanged write still re-renders every
+                                // preferences observer.
+                                guard model.preferences.driveOffsets[driveKey] != newValue else { return }
+                                model.preferences.driveOffsets[driveKey] = newValue
+                            }
                         ),
                         format: .number
                     )
                     if let suggestedOffset, model.preferences.driveOffsets[driveKey] == nil {
-                        Button("Use typical value for this drive family (+\(suggestedOffset))") {
+                        Button("Use typical value for this drive family (\(suggestedOffset.formatted(.number.sign(strategy: .always()))))") {
                             model.preferences.driveOffsets[driveKey] = suggestedOffset
                         }
                         .controlSize(.small)
@@ -409,6 +418,9 @@ struct RippingSettingsPane: View {
 
 struct MetadataSettingsPane: View {
     @Environment(SettingsStore.self) private var model
+    /// Edited locally and applied on submit/focus loss: parsing on every
+    /// keystroke turned "NL," back into "NL" and ate the comma.
+    @State private var countriesText = ""
 
     var body: some View {
         @Bindable var model = model
@@ -426,19 +438,9 @@ struct MetadataSettingsPane: View {
             }
 
             Section("Preferred countries") {
-                TextField(
-                    "Country codes",
-                    text: Binding(
-                        get: { model.preferences.metadata.preferredCountries.joined(separator: ", ") },
-                        set: {
-                            model.preferences.metadata.preferredCountries = $0
-                                .split(separator: ",")
-                                .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
-                                .filter { !$0.isEmpty }
-                        }
-                    ),
-                    prompt: Text("NL, DE, GB, US")
-                )
+                TextField("Country codes", text: $countriesText, prompt: Text("NL, DE, GB, US"))
+                    .onSubmit(applyCountries)
+                    .onAppear { countriesText = model.preferences.metadata.preferredCountries.joined(separator: ", ") }
                 Text("Used to rank pressings when several releases match.")
                     .settingsFooter()
             }
@@ -453,6 +455,17 @@ struct MetadataSettingsPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func applyCountries() {
+        let codes = countriesText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
+            .filter { !$0.isEmpty }
+        if codes != model.preferences.metadata.preferredCountries {
+            model.preferences.metadata.preferredCountries = codes
+        }
+        countriesText = codes.joined(separator: ", ")
     }
 }
 

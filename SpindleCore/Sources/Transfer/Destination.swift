@@ -47,6 +47,15 @@ public enum DestinationError: Error, CustomStringConvertible, Sendable {
             "The SSH host key for \(host) has changed (now \(actual)). The transfer was refused — this can mean a man-in-the-middle. If you know the server's key legitimately changed, forget the saved host key in Settings, then reconnect."
         }
     }
+
+    /// Whether retrying a moment later could plausibly succeed. Credential
+    /// and host-key problems need the user, not a second attempt.
+    public var isTransient: Bool {
+        switch self {
+        case .connectionFailed, .uploadFailed: true
+        case .notWritable, .missingCredentials, .hostKeyMismatch: false
+        }
+    }
 }
 
 /// User-configurable destination description (persisted in preferences;
@@ -70,7 +79,8 @@ public struct SFTPConfig: Sendable, Codable, Equatable {
     public var port: Int
     public var username: String
     public var authentication: Authentication
-    /// Remote base directory for the music library (absolute or ~-relative).
+    /// Remote base directory for the music library: absolute, or relative to
+    /// the login directory (a leading "~/" is accepted and stripped).
     public var remotePath: String
 
     public enum Authentication: Sendable, Codable, Equatable {

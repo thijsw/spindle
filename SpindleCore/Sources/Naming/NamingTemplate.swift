@@ -66,6 +66,11 @@ public struct NamingTemplate: Sendable, Equatable, Codable {
             }
             index = template.index(after: index)
         }
+        // Unclosed groups behave as if closed at the end of the template, so
+        // a stray "[" can't swallow the rest of the file name.
+        while let group = groupStack.popLast() {
+            if !group.dropped { append(group.content) }
+        }
 
         let components = output
             .split(separator: "/", omittingEmptySubsequences: true)

@@ -2,6 +2,16 @@ import DiscDrive
 import Foundation
 import RipEngine
 
+public enum OffsetScanError: Error, CustomStringConvertible, Sendable {
+    case truncatedWAV(String)
+
+    public var description: String {
+        switch self {
+        case .truncatedWAV(let name): "Staged WAV \(name) is too small to contain audio"
+        }
+    }
+}
+
 /// Determines a drive's read offset empirically: given a rip made at offset
 /// 0, recompute every track's CTDB checksum as if the rip had been made at
 /// each candidate offset, and find the shift at which the database agrees.
@@ -49,8 +59,10 @@ public enum OffsetScanner {
         // of disc audio starting at the first audio track.
         let pcm: [Data] = try wavURLs.map { url in
             let data = try Data(contentsOf: url, options: .alwaysMapped)
-            guard data.count > 44 else { throw CTDBError.malformedResponse("WAV too small: \(url.lastPathComponent)") }
-            return data.dropFirst(44)
+            guard data.count > WAVWriter.headerSize else {
+                throw OffsetScanError.truncatedWAV(url.lastPathComponent)
+            }
+            return data.dropFirst(WAVWriter.headerSize)
         }
         let stream = ConcatenatedBytes(chunks: pcm)
 

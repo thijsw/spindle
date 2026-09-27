@@ -2,10 +2,11 @@ import DiscDrive
 import Foundation
 import Metadata
 import RipEngine
+import SpindleCore
 
 // Shared plumbing for the subcommands in main.swift.
 
-let cliUserAgent = "Spindle/0.1 ( thijs@wijnmaalen.name )"
+let cliUserAgent = Spindle.userAgent
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))

@@ -82,7 +82,9 @@ public actor CDDrive: CDDeviceIO {
     }
 
     private func readTOC(format: UInt8) throws -> Data {
-        let capacity = 4096
+        // The request length is a UInt16, and a full CD-TEXT block set
+        // (format 5: 8 blocks × 256 packs × 18 B ≈ 36 KB) needs most of it.
+        let capacity = Int(UInt16.max)
         var buffer = Data(count: capacity)
         var actualLength: UInt16 = 0
         let code = buffer.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) -> Int32 in

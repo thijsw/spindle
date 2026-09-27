@@ -91,6 +91,34 @@ public struct Preferences: Sendable, Codable, Equatable {
         self.showMenuBarExtra = showMenuBarExtra
     }
 
+    /// Decodes leniently: a key missing from an older preferences file keeps
+    /// its default instead of failing the whole decode (which would silently
+    /// reset the user's destination, drive offsets and C2 verdicts).
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = Preferences()
+        format = try c.decodeIfPresent(AudioFormat.self, forKey: .format) ?? defaults.format
+        namingTemplate = try c.decodeIfPresent(NamingTemplate.self, forKey: .namingTemplate) ?? defaults.namingTemplate
+        destination = try c.decodeIfPresent(DestinationConfig.self, forKey: .destination)
+        ejectTiming = try c.decodeIfPresent(EjectTiming.self, forKey: .ejectTiming) ?? defaults.ejectTiming
+        ripMode = try c.decodeIfPresent(RipMode.self, forKey: .ripMode) ?? defaults.ripMode
+        maxRetries = try c.decodeIfPresent(Int.self, forKey: .maxRetries) ?? defaults.maxRetries
+        driveOffsets = try c.decodeIfPresent([String: Int].self, forKey: .driveOffsets) ?? defaults.driveOffsets
+        drivesWithUnreliableC2 = try c.decodeIfPresent([String].self, forKey: .drivesWithUnreliableC2)
+            ?? defaults.drivesWithUnreliableC2
+        metadata = try c.decodeIfPresent(MetadataPreferences.self, forKey: .metadata) ?? defaults.metadata
+        autoPickRelease = try c.decodeIfPresent(Bool.self, forKey: .autoPickRelease) ?? defaults.autoPickRelease
+        unmatchedDiscPolicy = try c.decodeIfPresent(UnmatchedDiscPolicy.self, forKey: .unmatchedDiscPolicy)
+            ?? defaults.unmatchedDiscPolicy
+        coverArtSize = try c.decodeIfPresent(CoverArtSize.self, forKey: .coverArtSize) ?? defaults.coverArtSize
+        writeCoverJPEG = try c.decodeIfPresent(Bool.self, forKey: .writeCoverJPEG) ?? defaults.writeCoverJPEG
+        writeRipLog = try c.decodeIfPresent(Bool.self, forKey: .writeRipLog) ?? defaults.writeRipLog
+        writeCueSheet = try c.decodeIfPresent(Bool.self, forKey: .writeCueSheet) ?? defaults.writeCueSheet
+        notificationsEnabled = try c.decodeIfPresent(Bool.self, forKey: .notificationsEnabled)
+            ?? defaults.notificationsEnabled
+        showMenuBarExtra = try c.decodeIfPresent(Bool.self, forKey: .showMenuBarExtra) ?? defaults.showMenuBarExtra
+    }
+
     public func ripConfiguration(forDrive identity: String?) -> RipConfiguration {
         RipConfiguration(
             mode: ripMode == .secure

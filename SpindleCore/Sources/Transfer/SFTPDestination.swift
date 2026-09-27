@@ -58,9 +58,7 @@ public actor SFTPDestination: Destination {
     private func connectedSFTP() async throws -> SFTPClient {
         if let sftp, sftp.isActive { return sftp }
 
-        client = nil
-        sftp = nil
-        createdDirectories.removeAll()
+        await dropConnection()
 
         let validator = TOFUHostKeyValidator(host: config.host, port: config.port, store: hostKeyStore)
         do {
@@ -85,18 +83,53 @@ public actor SFTPDestination: Destination {
         }
     }
 
+    /// Closes and forgets the connection so the next call reconnects.
+    private func dropConnection() async {
+        if let sftp { try? await sftp.close() }
+        if let client { try? await client.close() }
+        sftp = nil
+        client = nil
+        createdDirectories.removeAll()
+    }
+
     private func remotePath(_ relative: String) -> String {
-        let base = config.remotePath.hasSuffix("/") ? String(config.remotePath.dropLast()) : config.remotePath
-        return "\(base)/\(relative)"
+        let base = Self.normalizedBase(config.remotePath)
+        return relative.isEmpty ? base : "\(base)/\(relative)"
+    }
+
+    /// SFTP has no `~`: relative paths resolve against the login directory,
+    /// so "~" becomes "." and "~/music" becomes "music". Trailing slashes
+    /// are dropped; empty means the login directory.
+    static func normalizedBase(_ path: String) -> String {
+        var base = path
+        if base == "~" {
+            base = "."
+        } else if base.hasPrefix("~/") {
+            base.removeFirst(2)
+        }
+        while base.count > 1, base.hasSuffix("/") {
+            base.removeLast()
+        }
+        return base.isEmpty ? "." : base
     }
 
     private func ensureDirectory(_ path: String, sftp: SFTPClient) async throws {
         var current = ""
-        for component in path.split(separator: "/", omittingEmptySubsequences: true) {
+        for component in path.split(separator: "/", omittingEmptySubsequences: true) where component != "." {
             current += (current.isEmpty && !path.hasPrefix("/") ? "" : "/") + component
             guard !createdDirectories.contains(current) else { continue }
-            // mkdir fails when the directory exists; treat that as success.
-            try? await sftp.createDirectory(atPath: current)
+            do {
+                try await sftp.createDirectory(atPath: current)
+            } catch {
+                // mkdir fails when the directory already exists — fine. Any
+                // other failure (permissions, a file in the way) must surface
+                // here rather than as a confusing open/rename error later.
+                guard (try? await sftp.getAttributes(at: current)) != nil else {
+                    throw DestinationError.connectionFailed(
+                        "cannot create remote directory \(current): \(String(describing: error))"
+                    )
+                }
+            }
             createdDirectories.insert(current)
         }
     }
@@ -121,11 +154,15 @@ public actor SFTPDestination: Destination {
             do {
                 try await uploadOnce(file: file, toRelativePath: relativePath, progress: progress)
                 return
+            } catch let error as DestinationError where !error.isTransient {
+                // A changed host key or missing password won't fix itself
+                // in two seconds, and its precise error must reach the user.
+                await dropConnection()
+                throw error
             } catch {
                 lastError = error
                 // Force a fresh connection on the next attempt.
-                sftp = nil
-                client = nil
+                await dropConnection()
             }
         }
         throw DestinationError.uploadFailed(
@@ -175,9 +212,9 @@ public actor SFTPDestination: Destination {
 
     public func test() async -> Result<String, Error> {
         do {
+            try await prepare()
             let sftp = try await connectedSFTP()
             let base = remotePath("")
-            try await ensureDirectory(base, sftp: sftp)
             let probe = remotePath(".spindle-write-test")
             let handle = try await sftp.openFile(filePath: probe, flags: [.write, .create, .truncate])
             try await handle.write(ByteBuffer(string: "ok"), at: 0)
@@ -190,13 +227,6 @@ public actor SFTPDestination: Destination {
     }
 
     public func close() async {
-        if let sftp {
-            try? await sftp.close()
-        }
-        if let client {
-            try? await client.close()
-        }
-        sftp = nil
-        client = nil
+        await dropConnection()
     }
 }

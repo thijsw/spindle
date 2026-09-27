@@ -71,6 +71,12 @@ public actor PipelineCoordinator {
     private final class Job {
         let id = JobID()
         let bsdName: String
+        /// Preferences frozen at intake. A settings change mid-job must not
+        /// leave a disc half-configured (e.g. neither eject branch firing
+        /// because the timing flipped between rip and transfer). The
+        /// destination is the one exception, read at delivery time so a
+        /// destination configured mid-batch still applies.
+        let preferences: Preferences
         /// Set once the physical disc has left the drive. After this point a
         /// disc reappearing on the same `bsdName` is a *different* disc, so it
         /// must not be deduplicated against this (still-processing) job.
@@ -80,20 +86,19 @@ public actor PipelineCoordinator {
         var discTOC: DiscTOC?
         var cdText: CDTextInfo?
         var rankedReleases: [ReleaseScorer.Ranked] = []
-        var rippedTracks: [RippedTrack] = []
         // Rip provenance, kept for the archival log written at encode time.
         var ripOutcome: VerifiedRipper.Outcome?
         var ripConfig: RipConfiguration?
         var driveIdentity: DriveIdentity?
         var ripDuration: Duration?
-        var ctdbDiscCRC: UInt32?
         var art: CoverArt?
-        var resolution: CheckedContinuation<ResolvedAlbum, Never>?
-        var resolvedAlbum: ResolvedAlbum?
-        var stagingDir: URL
+        let metadata = MetadataGate()
+        var transferRate = TransferRateEstimator()
+        let stagingDir: URL
 
-        init(bsdName: String, stagingRoot: URL) {
+        init(bsdName: String, preferences: Preferences, stagingRoot: URL) {
             self.bsdName = bsdName
+            self.preferences = preferences
             self.stagingDir = stagingRoot.appendingPathComponent(UUID().uuidString)
             self.snapshot = JobSnapshot(
                 id: id,
@@ -111,16 +116,25 @@ public actor PipelineCoordinator {
         }
     }
 
+    /// One file headed for the destination.
+    private struct Upload {
+        let url: URL
+        let relativePath: String
+        /// Disc track number for audio files; nil for cover/log/cue.
+        let trackNumber: Int?
+    }
+
     private var preferences: Preferences
     private let dependencies: Dependencies
     private let jobStore: JobStore
     private var jobs: [JobID: Job] = [:]
     private var ripLaneBusy = false
     private var pendingDiscs: [String] = []
-    private var eventContinuation: AsyncStream<PipelineEvent>.Continuation?
+    private let eventContinuation: AsyncStream<PipelineEvent>.Continuation
     private let encodeSlots = AsyncSemaphore(value: 2)
     private let transferSlots = AsyncSemaphore(value: 1)
     private var started = false
+    private var lastProgressUpdate = ContinuousClock.now
 
     public nonisolated let events: AsyncStream<PipelineEvent>
 
@@ -128,11 +142,13 @@ public actor PipelineCoordinator {
         self.preferences = preferences
         self.dependencies = dependencies
         self.jobStore = jobStore
-        var continuation: AsyncStream<PipelineEvent>.Continuation!
-        self.events = AsyncStream(bufferingPolicy: .unbounded) { continuation = $0 }
-        self.eventContinuation = continuation
+        (self.events, self.eventContinuation) = AsyncStream.makeStream(
+            of: PipelineEvent.self, bufferingPolicy: .unbounded
+        )
     }
 
+    /// Applies to discs inserted from now on; running jobs keep the
+    /// preferences they started with.
     public func updatePreferences(_ preferences: Preferences) {
         self.preferences = preferences
     }
@@ -142,9 +158,7 @@ public actor PipelineCoordinator {
         guard !started else { return }
         started = true
 
-        for bsd in dependencies.drive.presentDiscs() {
-            enqueueDisc(bsdName: bsd)
-        }
+        rescanPresentDiscs()
 
         let stream = dependencies.drive.driveEvents
         Task { [weak self] in
@@ -160,43 +174,32 @@ public actor PipelineCoordinator {
         }
     }
 
+    // MARK: Metadata answers from the UI
+
     /// UI answer to `releaseChoiceNeeded`.
     public func chooseRelease(jobID: JobID, candidateID: String) {
         guard let job = jobs[jobID],
-              let ranked = job.rankedReleases.first(where: { $0.release.id == candidateID }),
-              let toc = job.toc
+              let album = tagEditorDraft(jobID: jobID, candidateID: candidateID)
         else { return }
-        if let album = ResolvedAlbum(
-            release: ranked.release,
-            discID: job.discTOC?.musicBrainzDiscID,
-            audioTrackCount: toc.audioTracks.count
-        ) {
-            resolve(job: job, album: album)
-        } else {
-            resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
-        }
+        resolve(job: job, album: album)
     }
 
     /// Fallback when the user dismisses the picker: tag from CD-TEXT/unknown.
     public func declineReleaseChoice(jobID: JobID) {
-        guard let job = jobs[jobID], let toc = job.toc else { return }
-        resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
+        guard let job = jobs[jobID], let album = fallbackAlbum(for: job) else { return }
+        resolve(job: job, album: album)
     }
 
     /// Pre-filled draft for the manual tag editor: the given candidate when
     /// one is chosen, otherwise CD-TEXT/fallback tags.
     public func tagEditorDraft(jobID: JobID, candidateID: String?) -> ResolvedAlbum? {
-        guard let job = jobs[jobID], let toc = job.toc else { return nil }
+        guard let job = jobs[jobID] else { return nil }
         if let candidateID,
            let ranked = job.rankedReleases.first(where: { $0.release.id == candidateID }),
-           let album = ResolvedAlbum(
-               release: ranked.release,
-               discID: job.discTOC?.musicBrainzDiscID,
-               audioTrackCount: toc.audioTracks.count
-           ) {
+           let album = resolvedAlbum(for: job, release: ranked.release) {
             return album
         }
-        return fallbackAlbum(for: job, trackCount: toc.audioTracks.count)
+        return fallbackAlbum(for: job)
     }
 
     /// Hand-edited tags from the tag editor; resolves the job like a picker
@@ -204,10 +207,6 @@ public actor PipelineCoordinator {
     public func provideTags(jobID: JobID, album: ResolvedAlbum) {
         guard let job = jobs[jobID] else { return }
         resolve(job: job, album: album)
-    }
-
-    public func currentSnapshots() -> [JobSnapshot] {
-        jobs.values.map(\.snapshot).sorted { $0.startedAt < $1.startedAt }
     }
 
     public func history() async -> [JobRecord] {
@@ -236,7 +235,7 @@ public actor PipelineCoordinator {
         guard !ripLaneBusy, !pendingDiscs.isEmpty else { return }
         ripLaneBusy = true
         let bsd = pendingDiscs.removeFirst()
-        let job = Job(bsdName: bsd, stagingRoot: dependencies.stagingRoot)
+        let job = Job(bsdName: bsd, preferences: preferences, stagingRoot: dependencies.stagingRoot)
         jobs[job.id] = job
         publish(job)
 
@@ -267,7 +266,11 @@ public actor PipelineCoordinator {
     // MARK: Stage helpers
 
     private func publish(_ job: Job) {
-        eventContinuation?.yield(.jobUpdated(job.snapshot))
+        eventContinuation.yield(.jobUpdated(job.snapshot))
+    }
+
+    private func notify(title: String, body: String) {
+        eventContinuation.yield(.notify(title: title, body: body))
     }
 
     private func setStage(_ job: Job, _ stage: JobStage) {
@@ -280,12 +283,12 @@ public actor PipelineCoordinator {
 
     private func failJob(_ job: Job, _ message: String) async {
         setStage(job, .failed(message))
+        // Wake anything still waiting for an album choice (the art fetch,
+        // the processing stage); the job is over.
+        job.metadata.cancel()
         await jobStore.append(JobRecord(snapshot: job.snapshot))
-        eventContinuation?.yield(.notify(
-            title: "Disc failed",
-            body: "\(job.snapshot.displayTitle): \(message)"
-        ))
-        try? FileManager.default.removeItem(at: job.stagingDir)
+        notify(title: "Disc failed", body: "\(job.snapshot.displayTitle): \(message)")
+        Self.removeStaging(job.stagingDir)
         // Only release if we still hold the drive. If the disc already ejected
         // (afterRip failure during encode/upload), a new disc may now hold this
         // bsdName — releasing would drop its mount protection.
@@ -294,19 +297,36 @@ public actor PipelineCoordinator {
         }
     }
 
+    /// Deleting hundreds of megabytes of staged WAVs must not block the
+    /// actor that also answers the UI.
+    private static func removeStaging(_ directory: URL) {
+        Task.detached(priority: .utility) {
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    private func resolvedAlbum(for job: Job, release: MBRelease) -> ResolvedAlbum? {
+        guard let toc = job.toc else { return nil }
+        return ResolvedAlbum(
+            release: release,
+            discID: job.discTOC?.musicBrainzDiscID,
+            audioTrackCount: toc.audioTracks.count
+        )
+    }
+
     /// CD-TEXT/unknown tagging for discs MusicBrainz can't (or wasn't allowed
-    /// to) resolve.
-    private func fallbackAlbum(for job: Job, trackCount: Int) -> ResolvedAlbum {
-        .fallback(
+    /// to) resolve. Nil only before the TOC has been read.
+    private func fallbackAlbum(for job: Job) -> ResolvedAlbum? {
+        guard let toc = job.toc else { return nil }
+        return .fallback(
             cdText: job.cdText,
             discID: job.discTOC?.musicBrainzDiscID,
-            trackCount: trackCount
+            trackCount: toc.audioTracks.count
         )
     }
 
     private func resolve(job: Job, album: ResolvedAlbum) {
-        guard job.resolvedAlbum == nil else { return }
-        job.resolvedAlbum = album
+        guard !job.metadata.isSettled else { return }
         job.snapshot.album = album
         job.snapshot.candidates = []
         // Update track titles in place.
@@ -317,8 +337,7 @@ public actor PipelineCoordinator {
             }
         }
         publish(job)
-        job.resolution?.resume(returning: album)
-        job.resolution = nil
+        job.metadata.resolve(album)
     }
 
     private func updateTrack(_ job: Job, number: Int, status: TrackState.Status) {
@@ -362,9 +381,7 @@ public actor PipelineCoordinator {
 
             setStage(job, .ripping)
             let identity = dependencies.driveIdentity(job.bsdName)
-            let config = preferences.ripConfiguration(
-                forDrive: identity?.offsetKey
-            )
+            let config = job.preferences.ripConfiguration(forDrive: identity?.offsetKey)
             // Verify-first: burst rip, confirm against CTDB, securely re-rip
             // only what the database can't vouch for.
             let ripper = VerifiedRipper(
@@ -377,49 +394,24 @@ public actor PipelineCoordinator {
                 guard let self else { return }
                 Task { await self.ripProgress(jobID: jobID, progress: progress) }
             }
-            job.rippedTracks = outcome.tracks
             job.ripOutcome = outcome
             job.ripConfig = config
             job.driveIdentity = identity
             job.ripDuration = ContinuousClock.now - ripStarted
-            job.snapshot.verificationSummary = outcome.verification?.summary ?? outcome.strategy
-            if outcome.c2Unreliable, let identity {
-                eventContinuation?.yield(.c2Unreliable(driveKey: identity.offsetKey))
-            }
-            for number in outcome.failedTracks {
-                updateTrack(job, number: number, status: .failed("Unreadable — gave up after the time limit"))
-            }
-            if !outcome.failedTracks.isEmpty {
-                eventContinuation?.yield(.notify(
-                    title: "Some tracks could not be read",
-                    body: "\(job.snapshot.displayTitle): track(s) \(outcome.failedTracks.map(String.init).joined(separator: ", ")) were skipped."
-                ))
-            }
-            for track in outcome.tracks {
-                updateTrack(job, number: track.trackNumber, status: .ripped)
-            }
-            if let verification = outcome.verification {
-                for (number, verdict) in verification.trackVerdicts {
-                    if case .accuratelyRipped = verdict {
-                        updateTrack(job, number: number, status: .verified(true))
-                    } else if case .differs = verdict {
-                        updateTrack(job, number: number, status: .verified(false))
-                    }
-                }
-            }
+            applyRipOutcome(outcome, to: job, driveKey: identity?.offsetKey)
             setStage(job, .ripped)
 
             // Close the raw device before ejecting — an open /dev/rdiskN
             // keeps the disc busy and DADiskEject fails silently.
             await device.close()
 
-            if preferences.ejectTiming == .afterRip {
+            if job.preferences.ejectTiming == .afterRip {
                 try? await dependencies.drive.eject(bsdName: job.bsdName)
                 job.ejected = true // a disc now inserted here is a new disc
-                eventContinuation?.yield(.notify(
+                notify(
                     title: "Disc ripped",
                     body: "\(job.snapshot.displayTitle) — you can insert the next disc."
-                ))
+                )
             }
 
             // Everything else happens off the rip lane.
@@ -429,11 +421,49 @@ public actor PipelineCoordinator {
         }
     }
 
-
-    private var lastProgressUpdate = ContinuousClock.now
+    /// Reflects the rip's verdicts in the job's track states and surfaces
+    /// the drive-level findings (unreliable C2, abandoned tracks).
+    private func applyRipOutcome(_ outcome: VerifiedRipper.Outcome, to job: Job, driveKey: String?) {
+        job.snapshot.verificationSummary = outcome.verification?.summary
+            ?? outcome.verificationError.map { "Verification unavailable: \($0)" }
+            ?? outcome.strategy
+        if outcome.c2Unreliable, let driveKey {
+            eventContinuation.yield(.c2Unreliable(driveKey: driveKey))
+        }
+        for number in outcome.failedTracks {
+            updateTrack(job, number: number, status: .failed("Unreadable — gave up after the time limit"))
+        }
+        if !outcome.failedTracks.isEmpty {
+            notify(
+                title: "Some tracks could not be read",
+                body: "\(job.snapshot.displayTitle): track(s) \(outcome.failedTracks.map(String.init).joined(separator: ", ")) were skipped."
+            )
+        }
+        for track in outcome.tracks {
+            updateTrack(job, number: track.trackNumber, status: .ripped)
+        }
+        if let verification = outcome.verification {
+            for (number, verdict) in verification.trackVerdicts {
+                if case .accuratelyRipped = verdict {
+                    updateTrack(job, number: number, status: .verified(true))
+                } else if case .differs = verdict {
+                    updateTrack(job, number: number, status: .verified(false))
+                }
+            }
+        }
+    }
 
     private func ripProgress(jobID: JobID, progress: RipProgress) {
-        guard let job = jobs[jobID] else { return }
+        guard let job = jobs[jobID],
+              let index = job.snapshot.tracks.firstIndex(where: { $0.number == progress.trackNumber })
+        else { return }
+        // Progress ticks arrive through independent tasks and may land after
+        // the rip has already advanced the track — never regress a track
+        // that is past ripping.
+        switch job.snapshot.tracks[index].status {
+        case .waiting, .ripping: break
+        default: return
+        }
         // Throttle the live percentage to ~4 Hz. This re-renders the main
         // window's track table (cheap), but must NOT churn the menu-bar
         // scene — see AppModel.menuBarSummary, which only changes on coarse
@@ -441,25 +471,59 @@ public actor PipelineCoordinator {
         let now = ContinuousClock.now
         guard now - lastProgressUpdate > .milliseconds(250) || progress.fraction >= 1 else { return }
         lastProgressUpdate = now
-        updateTrack(
-            job,
-            number: progress.trackNumber,
-            status: progress.fraction >= 1 ? .ripped : .ripping(progress.fraction)
-        )
+        job.snapshot.tracks[index].status = progress.fraction >= 1 ? .ripped : .ripping(progress.fraction)
+        publish(job)
     }
 
     // MARK: Identification (concurrent with rip)
 
+    /// What to do with the ranked MusicBrainz candidates for a disc.
+    enum ResolutionDecision {
+        /// Tag from this release without asking.
+        case autoPick(ReleaseScorer.Ranked)
+        /// Several plausible releases: show the picker.
+        case pick
+        /// No candidates and the user wants to hand-edit tags.
+        case askForTags
+        /// No candidates: tag from CD-TEXT/unknown and continue.
+        case fallback
+    }
+
+    /// Pure decision, separated for testability. A single release attached
+    /// to the disc's own DiscID leaves nothing to choose; a single *fuzzy*
+    /// (TOC-search) hit is only a guess and goes through the auto-pick
+    /// settings like any other.
+    static func decideResolution(
+        ranked: [ReleaseScorer.Ranked],
+        exactDiscID: Bool,
+        preferences: Preferences
+    ) -> ResolutionDecision {
+        guard let best = ranked.first else {
+            return preferences.unmatchedDiscPolicy == .askForTags ? .askForTags : .fallback
+        }
+        if ranked.count == 1, exactDiscID { return .autoPick(best) }
+        if preferences.autoPickRelease, best.confidence >= preferences.metadata.autoPickThreshold {
+            return .autoPick(best)
+        }
+        return .pick
+    }
+
     private func identify(jobID: JobID) async {
         guard let job = jobs[jobID], let discTOC = job.discTOC, let toc = job.toc else { return }
+        let preferences = job.preferences
 
         var ranked: [ReleaseScorer.Ranked] = []
+        var exactDiscID = false
         do {
-            let result = try await dependencies.metadata.lookup(disc: discTOC)
             let releases: [MBRelease]
-            switch result {
-            case .matched(let r), .fuzzy(let r): releases = r
-            case .none: releases = []
+            switch try await dependencies.metadata.lookup(disc: discTOC) {
+            case .matched(let found):
+                releases = found
+                exactDiscID = true
+            case .fuzzy(let found):
+                releases = found
+            case .none:
+                releases = []
             }
             ranked = ReleaseScorer(preferences: preferences.metadata).rank(
                 releases,
@@ -469,55 +533,46 @@ public actor PipelineCoordinator {
         } catch {
             // Network trouble: fall back to CD-TEXT silently.
         }
-        guard let job = jobs[jobID] else { return }
+        guard let job = jobs[jobID], !job.metadata.isSettled else { return }
         job.rankedReleases = ranked
 
-        if let best = ranked.first,
-           ranked.count == 1 || (preferences.autoPickRelease && best.confidence >= preferences.metadata.autoPickThreshold),
-           let album = ResolvedAlbum(
-               release: best.release,
-               discID: discTOC.musicBrainzDiscID,
-               audioTrackCount: toc.audioTracks.count
-           ) {
+        switch Self.decideResolution(ranked: ranked, exactDiscID: exactDiscID, preferences: preferences) {
+        case .autoPick(let best):
+            let discID = discTOC.musicBrainzDiscID
+            let cdText = job.cdText
+            let album = ResolvedAlbum(release: best.release, discID: discID, audioTrackCount: toc.audioTracks.count)
+                ?? .fallback(cdText: cdText, discID: discID, trackCount: toc.audioTracks.count)
             resolve(job: job, album: album)
-        } else if ranked.isEmpty {
-            if preferences.unmatchedDiscPolicy == .askForTags {
-                // Pause for hand-edited tags (the rip itself keeps going);
-                // the UI answers with provideTags or declineReleaseChoice.
-                eventContinuation?.yield(.tagsNeeded(job.id))
-            } else {
-                resolve(job: job, album: fallbackAlbum(for: job, trackCount: toc.audioTracks.count))
+        case .askForTags:
+            // Pause for hand-edited tags (the rip itself keeps going); the
+            // UI answers with provideTags or declineReleaseChoice.
+            eventContinuation.yield(.tagsNeeded(job.id))
+        case .fallback:
+            if let album = fallbackAlbum(for: job) {
+                resolve(job: job, album: album)
             }
-        } else {
+        case .pick:
             job.snapshot.candidates = ranked.map(ReleaseCandidate.init(ranked:))
             publish(job)
-            eventContinuation?.yield(.releaseChoiceNeeded(job.id))
+            eventContinuation.yield(.releaseChoiceNeeded(job.id))
         }
 
-        // Fetch art as soon as we know the album (await the resolution).
-        if let album = await awaitResolution(jobID: jobID) {
-            let art = await dependencies.art.fetchArt(
-                releaseMBID: album.releaseMBID,
-                releaseGroupMBID: album.releaseGroupMBID,
-                fallbackQuery: "\(album.albumArtist) \(album.album)",
-                size: preferences.coverArtSize
-            )
-            if let job = jobs[jobID], let art {
-                job.art = art
-                job.snapshot.hasArt = true
-                publish(job)
-                // Bytes out of band: the snapshot stays small and cheap.
-                eventContinuation?.yield(.artLoaded(job.id, art.data))
-            }
-        }
-    }
-
-    private func awaitResolution(jobID: JobID) async -> ResolvedAlbum? {
-        guard let job = jobs[jobID] else { return nil }
-        if let resolved = job.resolvedAlbum { return resolved }
-        return await withCheckedContinuation { continuation in
-            job.resolution = continuation
-        }
+        // Fetch art as soon as the album is known (however it gets chosen).
+        guard let album = await job.metadata.wait() else { return }
+        let art = await dependencies.art.fetchArt(
+            releaseMBID: album.releaseMBID,
+            releaseGroupMBID: album.releaseGroupMBID,
+            // A name search for "Unknown Artist Unknown Album" returns
+            // somebody else's cover; only search when the names are real.
+            fallbackQuery: album.hasPlaceholderNames ? nil : "\(album.albumArtist) \(album.album)",
+            size: preferences.coverArtSize
+        )
+        guard let job = jobs[jobID], let art, !job.snapshot.stage.isTerminal else { return }
+        job.art = art
+        job.snapshot.hasArt = true
+        publish(job)
+        // Bytes out of band: the snapshot stays small and cheap.
+        eventContinuation.yield(.artLoaded(job.id, art.data))
     }
 
     // MARK: Post-rip stages (detached from the rip lane)
@@ -528,191 +583,178 @@ public actor PipelineCoordinator {
         // (drive-bound, so failed tracks could be re-ripped before eject).
 
         // Wait for metadata if the picker is still open.
-        if job.resolvedAlbum == nil {
+        if !job.metadata.isSettled {
             setStage(job, .awaitingMetadata)
         }
-        guard let album = await awaitResolution(jobID: jobID) else { return }
+        guard let album = await job.metadata.wait() else { return }
 
-        await encodeAndTransfer(jobID: jobID, album: album)
-    }
-
-    private func encodeAndTransfer(jobID: JobID, album: ResolvedAlbum) async {
-        guard let job = jobs[jobID] else { return }
-
+        // Each slot is held for its own stage only — an upload must never sit
+        // on one of the two encode slots — and released on every exit path.
         do {
-            // Encode.
-            setStage(job, .encoding)
             await encodeSlots.wait()
-            defer { Task { await self.encodeSlots.signal() } }
-
-            let encodedDir = job.stagingDir.appendingPathComponent("encoded")
-            var uploads: [(URL, String)] = []
-            var albumFolders: Set<String> = []
-            var trackFiles: [Int: String] = [:] // position → relative path
-
-            let format = preferences.format
-            let encoder = format.makeEncoder()
-            for ripped in job.rippedTracks {
-                let position = trackPosition(of: ripped, in: job)
-                guard let track = album.tracks.first(where: { $0.position == position }) else {
-                    continue
-                }
-                let tags = TrackTags(album: album, track: track)
-                let relative = preferences.namingTemplate.render(album: album, track: track)
-                    + "." + format.fileExtension
-                let target = encodedDir.appendingPathComponent(relative)
-                try FileManager.default.createDirectory(
-                    at: target.deletingLastPathComponent(), withIntermediateDirectories: true
-                )
-                try await encoder.encode(wav: ripped.wavURL, to: target, tags: tags, art: job.art)
-                uploads.append((target, relative))
-                albumFolders.insert((relative as NSString).deletingLastPathComponent)
-                trackFiles[position] = relative
-                updateTrack(job, number: ripped.trackNumber, status: .encoded)
+            setStage(job, .encoding)
+            let uploads: [Upload]
+            do {
+                uploads = try await encode(job, album: album)
+            } catch {
+                encodeSlots.signal()
+                throw error
             }
+            encodeSlots.signal()
 
-            if preferences.writeCoverJPEG, let art = job.art {
-                for folder in albumFolders {
-                    let coverRelative = folder.isEmpty
-                        ? "cover.\(art.fileExtension)"
-                        : "\(folder)/cover.\(art.fileExtension)"
-                    let coverURL = encodedDir.appendingPathComponent(coverRelative)
-                    try? art.data.write(to: coverURL)
-                    uploads.append((coverURL, coverRelative))
-                }
-            }
-
-            // Archival artifacts, named "<Artist> - <Album>" like EAC's.
-            if preferences.writeRipLog || preferences.writeCueSheet,
-               let outcome = job.ripOutcome, let toc = job.toc {
-                let baseName = PathSanitizer.component("\(album.albumArtist) - \(album.album)")
-                for folder in albumFolders {
-                    func emit(_ contents: String, _ ext: String) {
-                        let relative = folder.isEmpty ? "\(baseName).\(ext)" : "\(folder)/\(baseName).\(ext)"
-                        let url = encodedDir.appendingPathComponent(relative)
-                        guard (try? contents.write(to: url, atomically: true, encoding: .utf8)) != nil else { return }
-                        uploads.append((url, relative))
-                    }
-                    if preferences.writeRipLog {
-                        emit(RipLog(
-                            ripDate: Date(),
-                            drive: job.driveIdentity,
-                            configuration: job.ripConfig ?? RipConfiguration(),
-                            toc: toc,
-                            discTOC: job.discTOC,
-                            album: album,
-                            outcome: outcome,
-                            ripDuration: job.ripDuration
-                        ).render(), "log")
-                    }
-                    if preferences.writeCueSheet {
-                        // Only the tracks whose files live in this folder.
-                        let names = trackFiles.compactMapValues { relative -> String? in
-                            (relative as NSString).deletingLastPathComponent == folder
-                                ? (relative as NSString).lastPathComponent : nil
-                        }
-                        emit(CueSheet.render(
-                            album: album,
-                            toc: toc,
-                            discTOC: job.discTOC,
-                            fileNames: names,
-                            comment: "Spindle \(RipLog.currentAppVersion)"
-                        ), "cue")
-                    }
-                }
-            }
-
-            // Transfer.
+            // Read live (not from the job's snapshot) so a destination the
+            // user configures while the first disc rips still applies.
             guard let destinationConfig = preferences.destination else {
                 await failJob(job, "No destination configured — set one in Settings")
                 return
             }
-            setStage(job, .transferring)
             await transferSlots.wait()
-            defer { Task { await self.transferSlots.signal() } }
-
-            let destination = dependencies.destinationFactory(destinationConfig)
-            try await destination.prepare()
-
-            // Overall upload progress across all files, weighted by byte size.
-            let totalBytes = uploads.reduce(Int64(0)) { $0 + Self.fileSize($1.0) }
-            var bytesDone: Int64 = 0
-            let id = job.id
-            transferRate = nil
-            emitTransferProgress(id, doneBytes: 0, totalBytes: totalBytes)
-
-            for (url, relative) in uploads {
-                let baseDone = bytesDone
-                try await destination.upload(file: url, toRelativePath: relative) { [weak self] progress in
-                    guard let self else { return }
-                    Task { await self.emitTransferProgress(id, doneBytes: baseDone + progress.bytesSent, totalBytes: totalBytes) }
-                }
-                bytesDone += Self.fileSize(url)
-                emitTransferProgress(id, doneBytes: bytesDone, totalBytes: totalBytes)
-                if let number = trackNumber(fromRelativePath: relative, album: album) {
-                    updateTrack(job, number: number, status: .transferred)
-                }
+            setStage(job, .transferring)
+            do {
+                try await transfer(job, uploads: uploads, to: destinationConfig)
+            } catch {
+                transferSlots.signal()
+                throw error
             }
-            await destination.close()
-
-            // Done. (eject releases the DiskArbitration hold internally; for
-            // afterRip the disc was already ejected+released during the rip
-            // stage, so we must NOT release again here — by now a newly
-            // inserted disc may already hold this same bsdName.)
-            if preferences.ejectTiming == .afterEverything {
-                try? await dependencies.drive.eject(bsdName: job.bsdName)
-                job.ejected = true
-            }
-            setStage(job, .completed)
-            await jobStore.append(JobRecord(snapshot: job.snapshot))
-            eventContinuation?.yield(.notify(
-                title: "Album ready",
-                body: "\(job.snapshot.displayTitle) → \(destinationConfig.displayName)"
-            ))
-            try? FileManager.default.removeItem(at: job.stagingDir)
+            transferSlots.signal()
+            await complete(job, deliveredTo: destinationConfig)
         } catch {
             await failJob(job, String(describing: error))
         }
     }
 
-    /// Maps a ripped track (by disc track number) to its album position:
-    /// identical for single-session discs ripped in order.
-    private func trackPosition(of ripped: RippedTrack, in job: Job) -> Int {
-        ripped.trackNumber
+    /// Encodes every ripped track into the staging "encoded" folder and adds
+    /// the per-folder extras (cover, rip log, cue sheet).
+    private func encode(_ job: Job, album: ResolvedAlbum) async throws -> [Upload] {
+        let preferences = job.preferences
+        let encodedDir = job.stagingDir.appendingPathComponent("encoded")
+        let format = preferences.format
+        let encoder = format.makeEncoder()
+
+        var uploads: [Upload] = []
+        // Album folder (relative) → track position → file name; multi-disc
+        // templates spread one album over several folders.
+        var folders: [String: [Int: String]] = [:]
+
+        for ripped in job.ripOutcome?.tracks ?? [] {
+            // Ripped tracks map to album positions by disc track number
+            // (single-session discs, ripped in order).
+            guard let track = album.tracks.first(where: { $0.position == ripped.trackNumber }) else {
+                continue
+            }
+            let relative = preferences.namingTemplate.render(album: album, track: track)
+                + "." + format.fileExtension
+            let target = encodedDir.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(
+                at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try await encoder.encode(
+                wav: ripped.wavURL, to: target, tags: TrackTags(album: album, track: track), art: job.art
+            )
+            uploads.append(Upload(url: target, relativePath: relative, trackNumber: ripped.trackNumber))
+            let path = relative as NSString
+            folders[path.deletingLastPathComponent, default: [:]][track.position] = path.lastPathComponent
+            updateTrack(job, number: ripped.trackNumber, status: .encoded)
+        }
+
+        // Archival artifacts, named "<Artist> - <Album>" like EAC's.
+        let baseName = PathSanitizer.component("\(album.albumArtist) - \(album.album)")
+        let ripLog: String? = if preferences.writeRipLog, let outcome = job.ripOutcome, let toc = job.toc {
+            RipLog(
+                drive: job.driveIdentity,
+                configuration: job.ripConfig ?? RipConfiguration(),
+                toc: toc,
+                discTOC: job.discTOC,
+                album: album,
+                outcome: outcome,
+                ripDuration: job.ripDuration
+            ).render()
+        } else {
+            nil
+        }
+
+        for (folder, fileNames) in folders.sorted(by: { $0.key < $1.key }) {
+            func emit(_ name: String, _ write: (URL) throws -> Void) throws {
+                let relative = folder.isEmpty ? name : "\(folder)/\(name)"
+                let url = encodedDir.appendingPathComponent(relative)
+                try write(url)
+                uploads.append(Upload(url: url, relativePath: relative, trackNumber: nil))
+            }
+            if preferences.writeCoverJPEG, let art = job.art {
+                try emit("cover.\(art.fileExtension)") { try art.data.write(to: $0) }
+            }
+            if let ripLog {
+                try emit("\(baseName).log") { try ripLog.write(to: $0, atomically: true, encoding: .utf8) }
+            }
+            if preferences.writeCueSheet, let toc = job.toc {
+                let cue = CueSheet.render(
+                    album: album,
+                    toc: toc,
+                    discTOC: job.discTOC,
+                    fileNames: fileNames, // only the tracks whose files live in this folder
+                    comment: "Spindle \(RipLog.currentAppVersion)"
+                )
+                try emit("\(baseName).cue") { try cue.write(to: $0, atomically: true, encoding: .utf8) }
+            }
+        }
+        return uploads
     }
 
-    /// Smoothed transfer-rate estimator for the active upload.
-    private var transferRate: (lastBytes: Int64, lastTime: ContinuousClock.Instant, bps: Double)?
+    private func transfer(_ job: Job, uploads: [Upload], to config: DestinationConfig) async throws {
+        let destination = dependencies.destinationFactory(config)
+        try await destination.prepare()
 
-    private func emitTransferProgress(_ id: JobID, doneBytes: Int64, totalBytes: Int64) {
-        let fraction = totalBytes > 0 ? Double(doneBytes) / Double(totalBytes) : 1
-        let now = ContinuousClock.now
-        var bps = transferRate?.bps ?? 0
-        if let rate = transferRate {
-            let dt = Double((now - rate.lastTime).components.seconds)
-                + Double((now - rate.lastTime).components.attoseconds) / 1e18
-            if dt > 0.05 { // ignore sub-50ms ticks; jitter swamps the estimate
-                let instant = Double(doneBytes - rate.lastBytes) / dt
-                bps = rate.bps == 0 ? instant : rate.bps * 0.7 + instant * 0.3 // EMA
-                transferRate = (doneBytes, now, bps)
+        // Overall progress across all files, weighted by byte size.
+        let sizes = uploads.map { Self.fileSize($0.url) }
+        let totalBytes = sizes.reduce(0, +)
+        var bytesDone: Int64 = 0
+        let id = job.id
+        job.transferRate = TransferRateEstimator()
+        emitTransferProgress(job, doneBytes: 0, totalBytes: totalBytes)
+
+        for (upload, size) in zip(uploads, sizes) {
+            let baseDone = bytesDone
+            try await destination.upload(file: upload.url, toRelativePath: upload.relativePath) { [weak self] progress in
+                guard let self else { return }
+                Task { await self.transferProgress(jobID: id, doneBytes: baseDone + progress.bytesSent, totalBytes: totalBytes) }
             }
-        } else {
-            transferRate = (doneBytes, now, 0)
+            bytesDone += size
+            emitTransferProgress(job, doneBytes: bytesDone, totalBytes: totalBytes)
+            if let number = upload.trackNumber {
+                updateTrack(job, number: number, status: .transferred)
+            }
         }
-        eventContinuation?.yield(.transferProgress(id, fraction: min(1, max(0, fraction)), bytesPerSecond: bps))
+        await destination.close()
+    }
+
+    private func complete(_ job: Job, deliveredTo destination: DestinationConfig) async {
+        // For afterRip the disc was already ejected+released during the rip
+        // stage, so we must NOT eject again here — by now a newly inserted
+        // disc may already hold this same bsdName.
+        if job.preferences.ejectTiming == .afterEverything {
+            try? await dependencies.drive.eject(bsdName: job.bsdName)
+            job.ejected = true
+        }
+        setStage(job, .completed)
+        await jobStore.append(JobRecord(snapshot: job.snapshot))
+        notify(title: "Album ready", body: "\(job.snapshot.displayTitle) → \(destination.displayName)")
+        Self.removeStaging(job.stagingDir)
+    }
+
+    private func transferProgress(jobID: JobID, doneBytes: Int64, totalBytes: Int64) {
+        guard let job = jobs[jobID] else { return }
+        emitTransferProgress(job, doneBytes: doneBytes, totalBytes: totalBytes)
+    }
+
+    private func emitTransferProgress(_ job: Job, doneBytes: Int64, totalBytes: Int64) {
+        guard job.transferRate.record(bytes: doneBytes) else { return } // stale tick
+        let fraction = totalBytes > 0 ? Double(doneBytes) / Double(totalBytes) : 1
+        eventContinuation.yield(.transferProgress(
+            job.id, fraction: min(1, max(0, fraction)), bytesPerSecond: job.transferRate.bytesPerSecond
+        ))
     }
 
     private static func fileSize(_ url: URL) -> Int64 {
-        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64).flatMap { $0 } ?? 0
-    }
-
-    private func trackNumber(fromRelativePath relative: String, album: ResolvedAlbum) -> Int? {
-        guard let file = relative.split(separator: "/").last else { return nil }
-        for track in album.tracks {
-            if file.hasPrefix(String(format: "%02d", track.position)) {
-                return track.position
-            }
-        }
-        return nil
+        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { $0 }.map(Int64.init) ?? 0
     }
 }

@@ -222,7 +222,11 @@ final class AppModel {
                 let image = await Task.detached(priority: .userInitiated) {
                     Self.thumbnail(from: data, maxPixel: 480)
                 }.value
-                if let image { coverArt[jobID] = image }
+                // The job may have finished while decoding; its entry was
+                // cleared then and must not come back (it would never be
+                // released again).
+                guard let image, jobs.contains(where: { $0.id == jobID && !$0.stage.isTerminal }) else { return }
+                coverArt[jobID] = image
             }
 
         case .c2Unreliable(let driveKey):

@@ -31,16 +31,23 @@ public actor MusicBrainzClient {
     private let session: URLSession
     private let userAgent: String
     private let baseURL: URL
-    private var lastRequestAt: ContinuousClock.Instant?
-    private let minimumInterval: Duration = .seconds(1.1)
+    /// The instant the most recently *reserved* request slot may fire.
+    /// Reserved before sleeping, so concurrent callers queue up one interval
+    /// apart instead of all waking at the same moment.
+    private var nextSlot: ContinuousClock.Instant?
+    private let minimumInterval: Duration
 
+    /// `minimumInterval` exists for tests; production keeps MusicBrainz's
+    /// mandatory one request per second (with margin).
     public init(
         userAgent: String,
         baseURL: URL = URL(string: "https://musicbrainz.org/ws/2")!,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        minimumInterval: Duration = .seconds(1.1)
     ) {
         self.userAgent = userAgent
         self.baseURL = baseURL
+        self.minimumInterval = minimumInterval
         if let session {
             self.session = session
         } else {
@@ -96,7 +103,7 @@ public actor MusicBrainzClient {
         while true {
             try await throttle()
 
-            var request = URLRequest(url: URL(string: "\(baseURL.absoluteString)/\(path)?\(query)")!)
+            var request = URLRequest(url: url(path: path, query: query))
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
             let (data, response) = try await session.data(for: request)
@@ -119,13 +126,24 @@ public actor MusicBrainzClient {
         }
     }
 
+    private func url(path: String, query: String) -> URL {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) ?? URLComponents()
+        components.path = (components.path as NSString).appendingPathComponent(path)
+        components.percentEncodedQuery = query
+        // The base URL and the query are built from known-good literals;
+        // only a corrupt injected base could fail here.
+        return components.url ?? baseURL
+    }
+
+    /// Reserves the next request slot and waits for it. Because the slot is
+    /// claimed *before* suspending, N concurrent callers fire N intervals
+    /// apart — the actor's reentrancy can't collapse them onto one instant.
     private func throttle() async throws {
-        if let last = lastRequestAt {
-            let elapsed = ContinuousClock.now - last
-            if elapsed < minimumInterval {
-                try await Task.sleep(for: minimumInterval - elapsed)
-            }
+        let now = ContinuousClock.now
+        let slot = nextSlot.map { max($0, now) } ?? now
+        nextSlot = slot + minimumInterval
+        if slot > now {
+            try await Task.sleep(until: slot, clock: .continuous)
         }
-        lastRequestAt = ContinuousClock.now
     }
 }
