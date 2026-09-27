@@ -1,4 +1,5 @@
 import Foundation
+import Net
 
 public enum MusicBrainzError: Error, CustomStringConvertible, Sendable {
     case http(Int)
@@ -28,8 +29,7 @@ public enum DiscLookupResult: Sendable {
 public actor MusicBrainzClient {
     private static let includes = "recordings+artist-credits+release-groups+labels+isrcs"
 
-    private let session: URLSession
-    private let userAgent: String
+    private let http: HTTPFetcher
     private let baseURL: URL
     /// The instant the most recently *reserved* request slot may fire.
     /// Reserved before sleeping, so concurrent callers queue up one interval
@@ -45,17 +45,9 @@ public actor MusicBrainzClient {
         session: URLSession? = nil,
         minimumInterval: Duration = .seconds(1.1)
     ) {
-        self.userAgent = userAgent
+        self.http = HTTPFetcher(userAgent: userAgent, session: session, accept: "application/json")
         self.baseURL = baseURL
         self.minimumInterval = minimumInterval
-        if let session {
-            self.session = session
-        } else {
-            let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 30
-            config.httpAdditionalHeaders = ["Accept": "application/json"]
-            self.session = URLSession(configuration: config)
-        }
     }
 
     /// Looks up releases for a disc: direct DiscID lookup first, then a fuzzy
@@ -103,17 +95,10 @@ public actor MusicBrainzClient {
         while true {
             try await throttle()
 
-            var request = URLRequest(url: url(path: path, query: query))
-            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                throw MusicBrainzError.invalidResponse("not an HTTP response")
-            }
-
-            switch http.statusCode {
+            let response = try await http.get(url(path: path, query: query))
+            switch response.status {
             case 200:
-                return data
+                return response.body
             case 404:
                 return nil
             case 503, 429:
@@ -121,7 +106,7 @@ public actor MusicBrainzClient {
                 guard attempt <= 3 else { throw MusicBrainzError.rateLimitedRepeatedly }
                 try await Task.sleep(for: .seconds(Double(attempt) * 2))
             default:
-                throw MusicBrainzError.http(http.statusCode)
+                throw MusicBrainzError.http(response.status)
             }
         }
     }

@@ -15,8 +15,8 @@ public enum CueSheet {
     ) -> String {
         var lines: [String] = []
         lines.append("REM COMMENT \(quote(comment))")
-        if let date = album.date, date.count >= 4 {
-            lines.append("REM DATE \(date.prefix(4))")
+        if let year = album.year {
+            lines.append("REM DATE \(year)")
         }
         if let discTOC {
             lines.append("REM DISCID \(discTOC.freeDBDiscID.uppercased())")

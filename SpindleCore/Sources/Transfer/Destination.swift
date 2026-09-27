@@ -1,5 +1,12 @@
 import Foundation
 
+public extension URL {
+    /// Size of a regular file in bytes, or nil when it can't be read.
+    var fileSize: Int64? {
+        (try? resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init)
+    }
+}
+
 public struct TransferProgress: Sendable {
     public let bytesSent: Int64
     public let totalBytes: Int64

@@ -1,4 +1,5 @@
 import Foundation
+import Metadata
 import ImageIO
 
 /// Reads and rewrites FLAC metadata blocks. Core Audio's FLAC encoder cannot
@@ -102,7 +103,7 @@ enum FLACMetadata {
     static func rewrite(
         fileURL: URL,
         vorbisComments: [(String, String)],
-        picture: (data: Data, mimeType: String)?,
+        picture: CoverArt?,
         pcmMD5: Data?,
         paddingBytes: Int = 8192
     ) throws {

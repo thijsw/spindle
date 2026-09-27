@@ -49,11 +49,10 @@ public struct ReleaseScorer: Sendable {
         let media = release.media ?? []
 
         // Hard requirement in spirit: a medium must match our track count.
-        let matchingMedium = media.contains { ($0.trackCount ?? $0.tracks?.count) == audioTrackCount }
-        if matchingMedium { score += 3 } else { score -= 5 }
+        if media.contains(where: { $0.effectiveTrackCount == audioTrackCount }) { score += 3 } else { score -= 5 }
 
         // The exact DiscID attached to a medium is the strongest signal.
-        if let discID, media.contains(where: { ($0.discs ?? []).contains { $0.id == discID } }) {
+        if let discID, media.contains(where: { $0.contains(discID: discID) }) {
             score += 3
         }
 

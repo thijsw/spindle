@@ -92,6 +92,14 @@ public actor SFTPDestination: Destination {
         createdDirectories.removeAll()
     }
 
+    /// ".<name>.part" next to the final file.
+    static func partialPath(for destination: String) -> String {
+        let path = destination as NSString
+        let directory = path.deletingLastPathComponent
+        let hidden = ".\(path.lastPathComponent).part"
+        return directory.isEmpty ? hidden : "\(directory)/\(hidden)"
+    }
+
     private func remotePath(_ relative: String) -> String {
         let base = Self.normalizedBase(config.remotePath)
         return relative.isEmpty ? base : "\(base)/\(relative)"
@@ -184,9 +192,11 @@ public actor SFTPDestination: Destination {
             throw DestinationError.uploadFailed(path: relativePath, reason: "cannot read source file")
         }
         defer { try? input.close() }
-        let totalBytes = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? 0
+        let totalBytes = file.fileSize ?? 0
 
-        let partial = destination + ".part"
+        // Hidden partial name, like the folder destination, so a library
+        // scanner watching the directory never lists a half-written track.
+        let partial = Self.partialPath(for: destination)
         let handle = try await sftp.openFile(
             filePath: partial,
             flags: [.write, .create, .truncate]

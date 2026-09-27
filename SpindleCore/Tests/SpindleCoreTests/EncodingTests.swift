@@ -153,9 +153,27 @@ let tinyJPEG = Data(base64Encoded:
         #expect(try await iTunesString(metadata, .iTunesMetadataSongName) == "First Song")
         #expect(try await iTunesString(metadata, .iTunesMetadataAlbum) == "Test Album")
 
+        // Picard-style freeform atoms carry the MusicBrainz identifiers, so
+        // an M4A library is tagged as richly as a FLAC one.
+        let trackID = try #require(M4AEncoder.freeformIdentifier(name: "MusicBrainz Track Id"))
+        #expect(try await iTunesString(metadata, trackID) == "77777777-aaaa-bbbb-cccc-000000000007")
+        let label = try #require(M4AEncoder.freeformIdentifier(name: "LABEL"))
+        #expect(try await iTunesString(metadata, label) == "Test Records")
+        let isrc = try #require(M4AEncoder.freeformIdentifier(name: "ISRC"))
+        #expect(try await iTunesString(metadata, isrc) == "NLA319700019")
+
         let artItem = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .iTunesMetadataCoverArt).first
         let artData = try await artItem?.load(.dataValue)
         #expect(artData == tinyJPEG, "cover art bytes intact")
+    }
+
+    @Test func everyTagKeyHasAVorbisName() {
+        let names = TagKey.allCases.map(\.vorbisName)
+        #expect(Set(names).count == names.count, "Vorbis names are unique")
+        let tags = TrackTags(album: makeTestAlbum(), track: makeTestAlbum().tracks[0])
+        #expect(tags.fields.contains(TagField(.originalYear, "1997")))
+        #expect(tags.fields.contains(TagField(.isrc, "NLA319700019")))
+        #expect(tags.vorbisComments.contains { $0 == ("MUSICBRAINZ_TRACKID", "77777777-aaaa-bbbb-cccc-000000000007") })
     }
 
     @Test func aacEncodeTagAndDecode() async throws {

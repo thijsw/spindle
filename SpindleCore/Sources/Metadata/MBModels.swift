@@ -105,6 +105,31 @@ public struct MBRecording: Decodable, Sendable {
     }
 }
 
+extension MBMedium {
+    /// Track count as reported, or counted from the track list.
+    public var effectiveTrackCount: Int? { trackCount ?? tracks?.count }
+
+    public func contains(discID: String) -> Bool {
+        (discs ?? []).contains { $0.id == discID }
+    }
+}
+
+extension MBRelease {
+    /// The medium that is our disc: matched by DiscID when possible, then by
+    /// audio track count, then the first one.
+    public func bestMedium(discID: String?, audioTrackCount: Int) -> MBMedium? {
+        let media = media ?? []
+        if let discID, let byDiscID = media.first(where: { $0.contains(discID: discID) }) {
+            return byDiscID
+        }
+        return media.first { $0.effectiveTrackCount == audioTrackCount } ?? media.first
+    }
+
+    /// The label/catalog pair shown for the release (MusicBrainz lists
+    /// several for co-releases; the first is the primary).
+    public var primaryLabelInfo: MBLabelInfo? { labelInfo?.first }
+}
+
 extension [MBArtistCredit] {
     /// Joins an artist credit into a display string ("A feat. B").
     public var joinedName: String {

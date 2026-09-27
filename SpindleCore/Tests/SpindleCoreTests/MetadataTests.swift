@@ -117,6 +117,25 @@ let discIDResponseJSON = """
     }
 }
 
+@Suite struct MediumMatchingTests {
+    private var twoDiscRelease: MBRelease {
+        let json = """
+        { "id": "R", "title": "Box",
+          "media": [
+            { "position": 1, "format": "CD", "track-count": 12, "discs": [ { "id": "disc-one" } ] },
+            { "position": 2, "format": "CD", "track-count": 9, "discs": [ { "id": "disc-two" } ] }
+          ] }
+        """
+        return try! JSONDecoder().decode(MBRelease.self, from: Data(json.utf8))
+    }
+
+    @Test func discIDBeatsTrackCountBeatsFirst() {
+        #expect(twoDiscRelease.bestMedium(discID: "disc-two", audioTrackCount: 12)?.position == 2, "DiscID wins")
+        #expect(twoDiscRelease.bestMedium(discID: "unknown", audioTrackCount: 9)?.position == 2, "then track count")
+        #expect(twoDiscRelease.bestMedium(discID: nil, audioTrackCount: 99)?.position == 1, "then the first medium")
+    }
+}
+
 @Suite struct ReleaseScorerTests {
     @Test func ranksOfficialMatchingReleaseFirst() throws {
         let releases = try #require(

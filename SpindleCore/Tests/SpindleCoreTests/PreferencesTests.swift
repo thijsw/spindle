@@ -14,6 +14,18 @@ import Testing
         #expect(decoded == prefs)
     }
 
+    @Test func c2VerdictsAreASet() throws {
+        var prefs = Preferences()
+        prefs.markC2Unreliable(forDrive: "HL-DT-ST GX50N")
+        prefs.markC2Unreliable(forDrive: "HL-DT-ST GX50N")
+        #expect(prefs.drivesWithUnreliableC2 == ["HL-DT-ST GX50N"])
+        #expect(!prefs.ripConfiguration(forDrive: "HL-DT-ST GX50N").allowC2)
+        #expect(prefs.ripConfiguration(forDrive: "PIONEER").allowC2)
+        // Older files stored a JSON array; that still decodes.
+        let legacy = Data(#"{ "drivesWithUnreliableC2": ["A", "B", "A"] }"#.utf8)
+        #expect(try JSONDecoder().decode(Preferences.self, from: legacy).drivesWithUnreliableC2 == ["A", "B"])
+    }
+
     /// A preferences file written by an older version lacks newer keys. That
     /// must not fail the decode — a failed decode falls back to defaults and
     /// silently wipes the destination, drive offsets and C2 verdicts.

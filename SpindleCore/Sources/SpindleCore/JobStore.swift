@@ -1,38 +1,34 @@
 import Foundation
 
-/// Append-mostly history of finished jobs, persisted as JSON.
+/// Append-mostly history of finished jobs, persisted as JSON. Only the most
+/// recent `limit` records are kept on disk — nothing reads further back.
 public actor JobStore {
+    public static let defaultLimit = 200
+
     private let fileURL: URL
+    private let limit: Int
     private var records: [JobRecord]
 
-    public init(directory: URL = PreferencesStore.applicationSupportURL) {
+    public init(directory: URL = PreferencesStore.applicationSupportURL, limit: Int = JobStore.defaultLimit) {
         self.fileURL = directory.appendingPathComponent("history.json")
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        if let data = try? Data(contentsOf: fileURL),
-           let loaded = try? decoder.decode([JobRecord].self, from: data) {
-            self.records = loaded
-        } else {
-            self.records = []
-        }
+        self.limit = limit
+        self.records = JSONFile.load([JobRecord].self, from: fileURL, dates: .iso8601) ?? []
     }
 
     public func append(_ record: JobRecord) {
         records.append(record)
-        persist()
+        if records.count > limit {
+            records.removeFirst(records.count - limit)
+        }
+        do {
+            try JSONFile.save(records, to: fileURL, dates: .iso8601)
+        } catch {
+            persistenceLog.error("Could not save job history: \(String(describing: error), privacy: .public)")
+        }
     }
 
-    public func history(limit: Int = 200) -> [JobRecord] {
-        Array(records.suffix(limit).reversed())
-    }
-
-    private func persist() {
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? (try? encoder.encode(records))?.write(to: fileURL)
+    /// Most recent first.
+    public func history() -> [JobRecord] {
+        records.reversed()
     }
 }

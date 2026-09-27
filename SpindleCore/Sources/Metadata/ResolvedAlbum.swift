@@ -116,13 +116,7 @@ extension ResolvedAlbum {
     /// Builds tagging input from a chosen MusicBrainz release. The medium is
     /// matched by DiscID when possible, then by audio track count.
     public init?(release: MBRelease, discID: String?, audioTrackCount: Int) {
-        let media = release.media ?? []
-        let medium = media.first { medium in
-            discID != nil && (medium.discs ?? []).contains { $0.id == discID }
-        }
-            ?? media.first { ($0.trackCount ?? $0.tracks?.count) == audioTrackCount }
-            ?? media.first
-        guard let medium else { return nil }
+        guard let medium = release.bestMedium(discID: discID, audioTrackCount: audioTrackCount) else { return nil }
 
         let credit = release.artistCredit ?? []
         let albumArtist = credit.isEmpty ? Self.unknownArtist : credit.joinedName
@@ -151,13 +145,13 @@ extension ResolvedAlbum {
             date: release.date,
             originalDate: release.releaseGroup?.firstReleaseDate,
             country: release.country,
-            label: release.labelInfo?.first?.label?.name,
-            catalogNumber: release.labelInfo?.first?.catalogNumber,
+            label: release.primaryLabelInfo?.label?.name,
+            catalogNumber: release.primaryLabelInfo?.catalogNumber,
             barcode: release.barcode,
             status: release.status,
             media: medium.format ?? "CD",
             discNumber: medium.position ?? 1,
-            discTotal: max(media.count, 1),
+            discTotal: max(release.media?.count ?? 0, 1),
             tracks: tracks
         )
     }

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SpindleCore
+import os
 
 /// Holds user preferences in isolation from the rip pipeline.
 ///
@@ -16,7 +17,12 @@ final class SettingsStore {
     var preferences: Preferences {
         didSet {
             guard preferences != oldValue else { return }
-            PreferencesStore.save(preferences)
+            do {
+                try PreferencesStore.save(preferences)
+            } catch {
+                Logger(subsystem: "nl.huell.spindle", category: "settings")
+                    .error("Could not save preferences: \(String(describing: error), privacy: .public)")
+            }
             onChange?(preferences)
         }
     }

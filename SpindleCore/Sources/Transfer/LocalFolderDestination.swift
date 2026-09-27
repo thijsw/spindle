@@ -40,7 +40,7 @@ public struct LocalFolderDestination: Destination {
             throw DestinationError.uploadFailed(path: relativePath, reason: String(describing: error))
         }
 
-        if let size = try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64 {
+        if let size = destination.fileSize {
             progress?(TransferProgress(bytesSent: size, totalBytes: size))
         }
     }

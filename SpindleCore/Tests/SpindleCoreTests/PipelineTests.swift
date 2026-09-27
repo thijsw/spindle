@@ -352,7 +352,7 @@ private struct PipelineHarness {
         await harness.coordinator.start()
         harness.drive.insert("mockdisk")
 
-        let event = await harness.waitForEvent(timeout: .seconds(10)) { event in
+        let event = await harness.waitForEvent { event in
             if case .releaseChoiceNeeded = event { return true }
             return false
         }

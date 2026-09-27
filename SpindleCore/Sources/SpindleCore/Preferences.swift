@@ -40,7 +40,7 @@ public struct Preferences: Sendable, Codable, Equatable {
     public var driveOffsets: [String: Int]
     /// Drives whose C2 error reporting was caught lying (same keys as
     /// `driveOffsets`).
-    public var drivesWithUnreliableC2: [String]
+    public var drivesWithUnreliableC2: Set<String>
     public var metadata: MetadataPreferences
     public var autoPickRelease: Bool
     public var unmatchedDiscPolicy: UnmatchedDiscPolicy
@@ -61,7 +61,7 @@ public struct Preferences: Sendable, Codable, Equatable {
         ripMode: RipMode = .secure,
         maxRetries: Int = 16,
         driveOffsets: [String: Int] = [:],
-        drivesWithUnreliableC2: [String] = [],
+        drivesWithUnreliableC2: Set<String> = [],
         metadata: MetadataPreferences = MetadataPreferences(),
         autoPickRelease: Bool = true,
         unmatchedDiscPolicy: UnmatchedDiscPolicy = .askForTags,
@@ -104,7 +104,7 @@ public struct Preferences: Sendable, Codable, Equatable {
         ripMode = try c.decodeIfPresent(RipMode.self, forKey: .ripMode) ?? defaults.ripMode
         maxRetries = try c.decodeIfPresent(Int.self, forKey: .maxRetries) ?? defaults.maxRetries
         driveOffsets = try c.decodeIfPresent([String: Int].self, forKey: .driveOffsets) ?? defaults.driveOffsets
-        drivesWithUnreliableC2 = try c.decodeIfPresent([String].self, forKey: .drivesWithUnreliableC2)
+        drivesWithUnreliableC2 = try c.decodeIfPresent(Set<String>.self, forKey: .drivesWithUnreliableC2)
             ?? defaults.drivesWithUnreliableC2
         metadata = try c.decodeIfPresent(MetadataPreferences.self, forKey: .metadata) ?? defaults.metadata
         autoPickRelease = try c.decodeIfPresent(Bool.self, forKey: .autoPickRelease) ?? defaults.autoPickRelease
@@ -130,8 +130,7 @@ public struct Preferences: Sendable, Codable, Equatable {
     }
 
     public mutating func markC2Unreliable(forDrive identity: String) {
-        guard !drivesWithUnreliableC2.contains(identity) else { return }
-        drivesWithUnreliableC2.append(identity)
+        drivesWithUnreliableC2.insert(identity)
     }
 }
 
@@ -145,17 +144,13 @@ public enum PreferencesStore {
         applicationSupportURL.appendingPathComponent("preferences.json")
     }
 
+    /// Saved preferences, or defaults on first launch (a malformed file is
+    /// logged and treated the same way).
     public static func load() -> Preferences {
-        guard let data = try? Data(contentsOf: fileURL),
-              let prefs = try? JSONDecoder().decode(Preferences.self, from: data)
-        else { return Preferences() }
-        return prefs
+        JSONFile.load(Preferences.self, from: fileURL) ?? Preferences()
     }
 
-    public static func save(_ preferences: Preferences) {
-        try? FileManager.default.createDirectory(at: applicationSupportURL, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? (try? encoder.encode(preferences))?.write(to: fileURL)
+    public static func save(_ preferences: Preferences) throws {
+        try JSONFile.save(preferences, to: fileURL)
     }
 }

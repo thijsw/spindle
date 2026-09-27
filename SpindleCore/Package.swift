@@ -26,9 +26,12 @@ let package = Package(
             ]
         ),
 
+        // Foundation-only HTTP plumbing shared by the web-service clients.
+        .target(name: "Net"),
+
         .target(
             name: "Metadata",
-            dependencies: ["DiscDrive"],
+            dependencies: ["DiscDrive", "Net"],
             linkerSettings: [
                 .linkedFramework("DiscRecording"),
             ]
@@ -36,7 +39,7 @@ let package = Package(
 
         .target(name: "RipEngine", dependencies: ["DiscDrive"]),
 
-        .target(name: "Verification", dependencies: ["DiscDrive", "RipEngine"]),
+        .target(name: "Verification", dependencies: ["DiscDrive", "RipEngine", "Net"]),
 
         .target(
             name: "Transfer",

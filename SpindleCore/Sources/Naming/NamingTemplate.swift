@@ -86,7 +86,7 @@ public struct NamingTemplate: Sendable, Equatable, Codable {
             "artist": track.artist,
             "title": track.title,
             "year": album.year ?? "",
-            "originalyear": album.originalDate.flatMap { $0.count >= 4 ? String($0.prefix(4)) : nil } ?? "",
+            "originalyear": album.originalYear ?? "",
             "date": album.date ?? "",
             "track": String(format: "%02d", track.position),
             "disc": album.discTotal > 1 ? String(album.discNumber) : "",

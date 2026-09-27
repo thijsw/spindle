@@ -1,5 +1,6 @@
 import DiscDrive
 import Foundation
+import Net
 import RipEngine
 
 /// One submission entry in the CUETools Database.
@@ -25,19 +26,20 @@ public struct CTDBEntry: Sendable, Hashable {
 public enum CTDBError: Error, CustomStringConvertible, Sendable {
     case http(Int)
     case malformedResponse(String)
+    case invalidBaseURL(URL)
 
     public var description: String {
         switch self {
         case .http(let code): "CTDB returned HTTP \(code)"
         case .malformedResponse(let detail): "Unexpected CTDB response: \(detail)"
+        case .invalidBaseURL(let url): "CTDB base URL cannot take a query: \(url)"
         }
     }
 }
 
 /// CUETools Database client (db.cue.tools, public API).
 public struct CTDBClient: Sendable {
-    private let session: URLSession
-    private let userAgent: String
+    private let http: HTTPFetcher
     private let baseURL: URL
 
     public init(
@@ -45,15 +47,8 @@ public struct CTDBClient: Sendable {
         baseURL: URL = URL(string: "https://db.cue.tools/lookup2.php")!,
         session: URLSession? = nil
     ) {
-        self.userAgent = userAgent
+        self.http = HTTPFetcher(userAgent: userAgent, session: session)
         self.baseURL = baseURL
-        if let session {
-            self.session = session
-        } else {
-            let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 30
-            self.session = URLSession(configuration: config)
-        }
     }
 
     /// The CTDB TOC parameter: colon-separated track start LBAs (data tracks
@@ -67,22 +62,20 @@ public struct CTDBClient: Sendable {
     }
 
     public func lookup(toc: TOC) async throws -> [CTDBEntry] {
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw CTDBError.invalidBaseURL(baseURL)
+        }
         components.queryItems = [
             URLQueryItem(name: "version", value: "3"),
             URLQueryItem(name: "ctdb", value: "1"),
             URLQueryItem(name: "fuzzy", value: "1"),
             URLQueryItem(name: "toc", value: Self.tocParameter(for: toc)),
         ]
-        var request = URLRequest(url: components.url!)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        guard let url = components.url else { throw CTDBError.invalidBaseURL(baseURL) }
 
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw CTDBError.malformedResponse("not an HTTP response")
-        }
-        guard http.statusCode == 200 else { throw CTDBError.http(http.statusCode) }
-        return try Self.parse(xml: data)
+        let response = try await http.get(url)
+        guard response.status == 200 else { throw CTDBError.http(response.status) }
+        return try Self.parse(xml: response.body)
     }
 
     public static func parse(xml: Data) throws -> [CTDBEntry] {

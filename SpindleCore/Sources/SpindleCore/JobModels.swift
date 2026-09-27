@@ -88,19 +88,22 @@ public struct ReleaseCandidate: Sendable, Equatable, Identifiable {
 
     public var id: String { releaseMBID }
 
-    public init(ranked: ReleaseScorer.Ranked) {
+    /// - Parameters:
+    ///   - discID: our disc's MusicBrainz DiscID, used to show the medium
+    ///     that is actually this disc on multi-disc releases.
+    public init(ranked: ReleaseScorer.Ranked, discID: String?, audioTrackCount: Int) {
         let release = ranked.release
-        let medium = release.media?.first
+        let medium = release.bestMedium(discID: discID, audioTrackCount: audioTrackCount)
         self.releaseMBID = release.id
         self.title = release.title
         self.artist = (release.artistCredit ?? []).joinedName
         self.date = release.date
         self.country = release.country
         self.format = medium?.format
-        self.label = release.labelInfo?.first?.label?.name
-        self.catalogNumber = release.labelInfo?.first?.catalogNumber
+        self.label = release.primaryLabelInfo?.label?.name
+        self.catalogNumber = release.primaryLabelInfo?.catalogNumber
         self.barcode = release.barcode
-        self.trackCount = medium?.trackCount ?? medium?.tracks?.count ?? 0
+        self.trackCount = medium?.effectiveTrackCount ?? 0
         self.confidence = ranked.confidence
     }
 }
@@ -141,8 +144,8 @@ public struct JobRecord: Sendable, Codable, Equatable, Identifiable {
 
     public init(snapshot: JobSnapshot) {
         self.id = snapshot.id
-        self.album = snapshot.album?.album ?? "Unknown Album"
-        self.artist = snapshot.album?.albumArtist ?? "Unknown Artist"
+        self.album = snapshot.album?.album ?? ResolvedAlbum.unknownAlbumPrefix
+        self.artist = snapshot.album?.albumArtist ?? ResolvedAlbum.unknownArtist
         if case .failed(let reason) = snapshot.stage {
             self.succeeded = false
             self.detail = reason

@@ -1,4 +1,5 @@
 import Foundation
+import Net
 
 public struct CoverArt: Sendable {
     public enum Source: String, Sendable {
@@ -35,18 +36,10 @@ public enum CoverArtSize: String, Sendable, Codable, CaseIterable {
 /// Fetches album art: Cover Art Archive for the release, then the release
 /// group, then the iTunes Search API as a last resort.
 public struct CoverArtClient: Sendable {
-    private let session: URLSession
-    private let userAgent: String
+    private let http: HTTPFetcher
 
     public init(userAgent: String, session: URLSession? = nil) {
-        self.userAgent = userAgent
-        if let session {
-            self.session = session
-        } else {
-            let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 60
-            self.session = URLSession(configuration: config)
-        }
+        self.http = HTTPFetcher(userAgent: userAgent, session: session, timeout: 60)
     }
 
     public func fetchArt(
@@ -81,9 +74,10 @@ public struct CoverArtClient: Sendable {
             URLQueryItem(name: "limit", value: "1"),
         ]
         guard let url = components.url,
-              let (data, response) = try? await session.data(for: request(url)),
-              (response as? HTTPURLResponse)?.statusCode == 200
+              let response = try? await http.get(url),
+              response.status == 200
         else { return nil }
+        let data = response.body
 
         struct SearchResponse: Decodable {
             struct Result: Decodable { let artworkUrl100: String? }
@@ -99,18 +93,10 @@ public struct CoverArtClient: Sendable {
     }
 
     private func fetchImage(url: URL, source: CoverArt.Source) async -> CoverArt? {
-        guard let (data, response) = try? await session.data(for: request(url)),
-              let http = response as? HTTPURLResponse,
-              http.statusCode == 200,
-              data.count > 1000 // reject error pages
+        guard let response = try? await http.get(url),
+              response.status == 200,
+              response.body.count > 1000 // reject error pages
         else { return nil }
-        let mime = http.value(forHTTPHeaderField: "Content-Type") ?? "image/jpeg"
-        return CoverArt(data: data, mimeType: mime, source: source)
-    }
-
-    private func request(_ url: URL) -> URLRequest {
-        var request = URLRequest(url: url)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        return request
+        return CoverArt(data: response.body, mimeType: response.mediaType ?? "image/jpeg", source: source)
     }
 }

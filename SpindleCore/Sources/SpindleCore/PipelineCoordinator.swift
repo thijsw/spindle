@@ -552,7 +552,9 @@ public actor PipelineCoordinator {
                 resolve(job: job, album: album)
             }
         case .pick:
-            job.snapshot.candidates = ranked.map(ReleaseCandidate.init(ranked:))
+            job.snapshot.candidates = ranked.map {
+                ReleaseCandidate(ranked: $0, discID: discTOC.musicBrainzDiscID, audioTrackCount: toc.audioTracks.count)
+            }
             publish(job)
             eventContinuation.yield(.releaseChoiceNeeded(job.id))
         }
@@ -623,79 +625,67 @@ public actor PipelineCoordinator {
         }
     }
 
-    /// Encodes every ripped track into the staging "encoded" folder and adds
-    /// the per-folder extras (cover, rip log, cue sheet).
+    /// Encodes every ripped track into the staging "encoded" folder and
+    /// writes the per-folder extras (cover, rip log, cue sheet) the
+    /// `DeliveryPlan` calls for.
     private func encode(_ job: Job, album: ResolvedAlbum) async throws -> [Upload] {
         let preferences = job.preferences
         let encodedDir = job.stagingDir.appendingPathComponent("encoded")
-        let format = preferences.format
-        let encoder = format.makeEncoder()
+        guard let outcome = job.ripOutcome, let toc = job.toc else { return [] }
+        let wavURLs = Dictionary(uniqueKeysWithValues: outcome.tracks.map { ($0.trackNumber, $0.wavURL) })
+
+        let plan = DeliveryPlan.build(
+            album: album,
+            rippedTrackNumbers: outcome.tracks.map(\.trackNumber),
+            template: preferences.namingTemplate,
+            format: preferences.format,
+            coverExtension: preferences.writeCoverJPEG ? job.art?.fileExtension : nil,
+            ripLog: preferences.writeRipLog,
+            cueSheet: preferences.writeCueSheet
+        )
+        let encoder = preferences.format.makeEncoder()
+        // Rendered once; every album folder gets the same log.
+        var renderedLog: String?
 
         var uploads: [Upload] = []
-        // Album folder (relative) → track position → file name; multi-disc
-        // templates spread one album over several folders.
-        var folders: [String: [Int: String]] = [:]
-
-        for ripped in job.ripOutcome?.tracks ?? [] {
-            // Ripped tracks map to album positions by disc track number
-            // (single-session discs, ripped in order).
-            guard let track = album.tracks.first(where: { $0.position == ripped.trackNumber }) else {
-                continue
-            }
-            let relative = preferences.namingTemplate.render(album: album, track: track)
-                + "." + format.fileExtension
-            let target = encodedDir.appendingPathComponent(relative)
+        for file in plan.files {
+            let url = encodedDir.appendingPathComponent(file.relativePath)
             try FileManager.default.createDirectory(
-                at: target.deletingLastPathComponent(), withIntermediateDirectories: true
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
             )
-            try await encoder.encode(
-                wav: ripped.wavURL, to: target, tags: TrackTags(album: album, track: track), art: job.art
-            )
-            uploads.append(Upload(url: target, relativePath: relative, trackNumber: ripped.trackNumber))
-            let path = relative as NSString
-            folders[path.deletingLastPathComponent, default: [:]][track.position] = path.lastPathComponent
-            updateTrack(job, number: ripped.trackNumber, status: .encoded)
-        }
-
-        // Archival artifacts, named "<Artist> - <Album>" like EAC's.
-        let baseName = PathSanitizer.component("\(album.albumArtist) - \(album.album)")
-        let ripLog: String? = if preferences.writeRipLog, let outcome = job.ripOutcome, let toc = job.toc {
-            RipLog(
-                drive: job.driveIdentity,
-                configuration: job.ripConfig ?? RipConfiguration(),
-                toc: toc,
-                discTOC: job.discTOC,
-                album: album,
-                outcome: outcome,
-                ripDuration: job.ripDuration
-            ).render()
-        } else {
-            nil
-        }
-
-        for (folder, fileNames) in folders.sorted(by: { $0.key < $1.key }) {
-            func emit(_ name: String, _ write: (URL) throws -> Void) throws {
-                let relative = folder.isEmpty ? name : "\(folder)/\(name)"
-                let url = encodedDir.appendingPathComponent(relative)
-                try write(url)
-                uploads.append(Upload(url: url, relativePath: relative, trackNumber: nil))
-            }
-            if preferences.writeCoverJPEG, let art = job.art {
-                try emit("cover.\(art.fileExtension)") { try art.data.write(to: $0) }
-            }
-            if let ripLog {
-                try emit("\(baseName).log") { try ripLog.write(to: $0, atomically: true, encoding: .utf8) }
-            }
-            if preferences.writeCueSheet, let toc = job.toc {
+            var trackNumber: Int?
+            switch file.content {
+            case .audio(let number):
+                guard let wav = wavURLs[number],
+                      let track = album.tracks.first(where: { $0.position == number })
+                else { continue }
+                try await encoder.encode(wav: wav, to: url, tags: TrackTags(album: album, track: track), art: job.art)
+                updateTrack(job, number: number, status: .encoded)
+                trackNumber = number
+            case .cover:
+                guard let art = job.art else { continue }
+                try art.data.write(to: url)
+            case .ripLog:
+                if renderedLog == nil {
+                    renderedLog = RipLog(
+                        drive: job.driveIdentity,
+                        configuration: job.ripConfig ?? RipConfiguration(),
+                        toc: toc,
+                        discTOC: job.discTOC,
+                        album: album,
+                        outcome: outcome,
+                        ripDuration: job.ripDuration
+                    ).render()
+                }
+                try renderedLog?.write(to: url, atomically: true, encoding: .utf8)
+            case .cueSheet(let fileNames):
                 let cue = CueSheet.render(
-                    album: album,
-                    toc: toc,
-                    discTOC: job.discTOC,
-                    fileNames: fileNames, // only the tracks whose files live in this folder
-                    comment: "Spindle \(RipLog.currentAppVersion)"
+                    album: album, toc: toc, discTOC: job.discTOC, fileNames: fileNames,
+                    comment: "Spindle \(Spindle.version)"
                 )
-                try emit("\(baseName).cue") { try cue.write(to: $0, atomically: true, encoding: .utf8) }
+                try cue.write(to: url, atomically: true, encoding: .utf8)
             }
+            uploads.append(Upload(url: url, relativePath: file.relativePath, trackNumber: trackNumber))
         }
         return uploads
     }
@@ -705,7 +695,7 @@ public actor PipelineCoordinator {
         try await destination.prepare()
 
         // Overall progress across all files, weighted by byte size.
-        let sizes = uploads.map { Self.fileSize($0.url) }
+        let sizes = uploads.map { $0.url.fileSize ?? 0 }
         let totalBytes = sizes.reduce(0, +)
         var bytesDone: Int64 = 0
         let id = job.id
@@ -752,9 +742,5 @@ public actor PipelineCoordinator {
         eventContinuation.yield(.transferProgress(
             job.id, fraction: min(1, max(0, fraction)), bytesPerSecond: job.transferRate.bytesPerSecond
         ))
-    }
-
-    private static func fileSize(_ url: URL) -> Int64 {
-        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { $0 }.map(Int64.init) ?? 0
     }
 }

@@ -74,7 +74,7 @@ struct TagEditorView: View {
         .onAppear {
             // The artist is the field most likely to need typing when the
             // disc is unknown; land the cursor there.
-            focusedField = draft.albumArtist == "Unknown Artist" ? .albumArtist : nil
+            focusedField = draft.albumArtist == ResolvedAlbum.unknownArtist ? .albumArtist : nil
         }
     }
 

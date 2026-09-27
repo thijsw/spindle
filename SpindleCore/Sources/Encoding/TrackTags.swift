@@ -1,6 +1,63 @@
 import Foundation
 import Metadata
 
+/// One tag, independent of the container format.
+public struct TagField: Sendable, Equatable {
+    public let key: TagKey
+    public let value: String
+
+    public init(_ key: TagKey, _ value: String) {
+        self.key = key
+        self.value = value
+    }
+}
+
+/// The Picard tag vocabulary Spindle writes. Each container maps it to its
+/// own names (Vorbis comments in FLAC, iTunes atoms in M4A) so every format
+/// carries the same information.
+public enum TagKey: String, Sendable, CaseIterable {
+    case title, artist, album, albumArtist
+    case trackNumber, trackTotal, discNumber, discTotal, media
+    case albumArtistSort, date, originalDate, originalYear
+    case label, catalogNumber, barcode, isrc, releaseCountry, releaseStatus
+    case musicBrainzAlbumID, musicBrainzReleaseGroupID, musicBrainzDiscID
+    /// Picard maps MUSICBRAINZ_TRACKID to the *recording* MBID.
+    case musicBrainzRecordingID
+    case musicBrainzReleaseTrackID, musicBrainzAlbumArtistID, musicBrainzArtistID
+
+    /// Picard's Vorbis comment name.
+    public var vorbisName: String {
+        switch self {
+        case .title: "TITLE"
+        case .artist: "ARTIST"
+        case .album: "ALBUM"
+        case .albumArtist: "ALBUMARTIST"
+        case .trackNumber: "TRACKNUMBER"
+        case .trackTotal: "TRACKTOTAL"
+        case .discNumber: "DISCNUMBER"
+        case .discTotal: "DISCTOTAL"
+        case .media: "MEDIA"
+        case .albumArtistSort: "ALBUMARTISTSORT"
+        case .date: "DATE"
+        case .originalDate: "ORIGINALDATE"
+        case .originalYear: "ORIGINALYEAR"
+        case .label: "LABEL"
+        case .catalogNumber: "CATALOGNUMBER"
+        case .barcode: "BARCODE"
+        case .isrc: "ISRC"
+        case .releaseCountry: "RELEASECOUNTRY"
+        case .releaseStatus: "RELEASESTATUS"
+        case .musicBrainzAlbumID: "MUSICBRAINZ_ALBUMID"
+        case .musicBrainzReleaseGroupID: "MUSICBRAINZ_RELEASEGROUPID"
+        case .musicBrainzDiscID: "MUSICBRAINZ_DISCID"
+        case .musicBrainzRecordingID: "MUSICBRAINZ_TRACKID"
+        case .musicBrainzReleaseTrackID: "MUSICBRAINZ_RELEASETRACKID"
+        case .musicBrainzAlbumArtistID: "MUSICBRAINZ_ALBUMARTISTID"
+        case .musicBrainzArtistID: "MUSICBRAINZ_ARTISTID"
+        }
+    }
+}
+
 /// Everything written into one track's tags.
 public struct TrackTags: Sendable {
     public var album: ResolvedAlbum
@@ -13,50 +70,52 @@ public struct TrackTags: Sendable {
         self.trackTotal = album.tracks.count
     }
 
-    /// The Picard-compatible Vorbis comment set Navidrome and friends expect.
-    /// Order is stable; multi-value fields repeat the key.
-    public var vorbisComments: [(String, String)] {
-        var comments: [(String, String)] = [
-            ("TITLE", track.title),
-            ("ARTIST", track.artist),
-            ("ALBUM", album.album),
-            ("ALBUMARTIST", album.albumArtist),
-            ("TRACKNUMBER", String(track.position)),
-            ("TRACKTOTAL", String(trackTotal)),
-            ("DISCNUMBER", String(album.discNumber)),
-            ("DISCTOTAL", String(album.discTotal)),
-            ("MEDIA", album.media),
+    /// The canonical tag set, in a stable order; multi-value fields repeat
+    /// the key. Empty values are omitted.
+    public var fields: [TagField] {
+        var fields: [TagField] = [
+            TagField(.title, track.title),
+            TagField(.artist, track.artist),
+            TagField(.album, album.album),
+            TagField(.albumArtist, album.albumArtist),
+            TagField(.trackNumber, String(track.position)),
+            TagField(.trackTotal, String(trackTotal)),
+            TagField(.discNumber, String(album.discNumber)),
+            TagField(.discTotal, String(album.discTotal)),
+            TagField(.media, album.media),
         ]
 
-        func add(_ key: String, _ value: String?) {
-            if let value, !value.isEmpty { comments.append((key, value)) }
+        func add(_ key: TagKey, _ value: String?) {
+            if let value, !value.isEmpty { fields.append(TagField(key, value)) }
         }
 
-        add("ALBUMARTISTSORT", album.albumArtistSort)
-        add("DATE", album.date)
-        add("ORIGINALDATE", album.originalDate)
-        if let original = album.originalDate, original.count >= 4 {
-            add("ORIGINALYEAR", String(original.prefix(4)))
-        }
-        add("LABEL", album.label)
-        add("CATALOGNUMBER", album.catalogNumber)
-        add("BARCODE", album.barcode)
-        add("ISRC", track.isrc)
-        add("RELEASECOUNTRY", album.country)
-        add("RELEASESTATUS", album.status?.lowercased())
-        add("MUSICBRAINZ_ALBUMID", album.releaseMBID)
-        add("MUSICBRAINZ_RELEASEGROUPID", album.releaseGroupMBID)
-        add("MUSICBRAINZ_DISCID", album.discID)
-        // Picard maps MUSICBRAINZ_TRACKID to the *recording* MBID.
-        add("MUSICBRAINZ_TRACKID", track.recordingMBID)
-        add("MUSICBRAINZ_RELEASETRACKID", track.trackMBID)
+        add(.albumArtistSort, album.albumArtistSort)
+        add(.date, album.date)
+        add(.originalDate, album.originalDate)
+        add(.originalYear, album.originalYear)
+        add(.label, album.label)
+        add(.catalogNumber, album.catalogNumber)
+        add(.barcode, album.barcode)
+        add(.isrc, track.isrc)
+        add(.releaseCountry, album.country)
+        add(.releaseStatus, album.status?.lowercased())
+        add(.musicBrainzAlbumID, album.releaseMBID)
+        add(.musicBrainzReleaseGroupID, album.releaseGroupMBID)
+        add(.musicBrainzDiscID, album.discID)
+        add(.musicBrainzRecordingID, track.recordingMBID)
+        add(.musicBrainzReleaseTrackID, track.trackMBID)
         for id in album.albumArtistMBIDs {
-            comments.append(("MUSICBRAINZ_ALBUMARTISTID", id))
+            add(.musicBrainzAlbumArtistID, id)
         }
         for id in track.artistMBIDs {
-            comments.append(("MUSICBRAINZ_ARTISTID", id))
+            add(.musicBrainzArtistID, id)
         }
-        return comments
+        return fields
+    }
+
+    /// The Picard-compatible Vorbis comment set Navidrome and friends expect.
+    public var vorbisComments: [(String, String)] {
+        fields.map { ($0.key.vorbisName, $0.value) }
     }
 }
 
