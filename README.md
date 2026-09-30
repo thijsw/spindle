@@ -34,6 +34,18 @@ launch (via [Sparkle](https://sparkle-project.org)) and offers them in place.
 Each release is built, signed, notarized and packaged automatically by GitHub
 Actions — see [`docs/RELEASING.md`](docs/RELEASING.md) for how to cut one.
 
+### Before the first disc
+
+- **Tell Music to leave CDs alone.** macOS may open Music and start importing
+  the moment a disc appears; two readers fighting over the drive make a rip
+  slow and noisy, and Spindle warns when it can't get the disc to itself.
+  In Music → Settings → General, set *On CD insert* to *Ignore*.
+- **Pick a destination** in Settings → Destination (a folder, or an SFTP
+  server). Spindle rips without one, but has nowhere to deliver the album.
+- **Check the drive's read offset** in Settings → Ripping once a disc is in.
+  Spindle suggests the typical value for the drive family; a CTDB-verified
+  rip confirms it.
+
 ## How it works
 
 - **Accurate ripping** — Spindle reads raw CDDA sectors through the macOS
@@ -52,7 +64,9 @@ Actions — see [`docs/RELEASING.md`](docs/RELEASING.md) for how to cut one.
   only the encode waits; the rip and eject still proceed. Cover art comes from
   the Cover Art Archive with an iTunes fallback.
 - **Encoding** — FLAC, ALAC, or AAC (256 kbps), one format per rip, chosen in
-  Settings. Every format carries the full Picard-compatible tag set and
+  Settings. Every format carries the same Picard-compatible tag set — the
+  MusicBrainz identifiers, ISRC, label, catalog number and barcode included,
+  written as Vorbis comments in FLAC and as iTunes atoms in M4A — plus
   embedded cover art; FLAC additionally gets a correct PCM MD5 in its
   STREAMINFO. Files are named by a configurable template,
   `Artist/Album (Year)/01 - Title.flac` by default. Each album folder can also
@@ -75,7 +89,7 @@ in the `SpindleCore` local Swift package.
 
 ```sh
 open Spindle.xcodeproj                  # develop in Xcode
-(cd SpindleCore && swift test)          # Swift Testing suite, headless
+(cd SpindleCore && swift test)          # Swift Testing suite (~130 tests, a few seconds)
 Scripts/make-app.sh                     # assemble dist/Spindle.app (Debug)
 Scripts/make-app.sh release             # universal Release build
 ```
@@ -92,7 +106,10 @@ Scripts/notarize.sh dist/Spindle.dmg   # the disk image is notarized and stapled
 ## Development CLI
 
 Every subsystem is exercisable headless via `spindle-cli` (run from
-`SpindleCore/`):
+`SpindleCore/`). `rip` and `encode` use the same Settings as the app — the
+saved per-drive offset and C2 verdict, the naming template, format and
+album-folder extras — so a CLI rip is byte-for-byte what the app would
+produce; `identify --toc` and `encode --toc` work without a disc.
 
 ```sh
 swift run spindle-cli detect            # watch disc insertions
@@ -115,14 +132,16 @@ swift run spindle-cli push library --to sftp://user@host/srv/music
 | --- | --- |
 | `CIOCD` | C shim for the IOKit CD ioctls (DKIOCCDREAD &c.) |
 | `DiscDrive` | Drive monitoring (DiskArbitration), TOC parsing, raw device access |
-| `RipEngine` | Secure/burst rip loop, offset correction, checksums, WAV staging |
+| `RipEngine` | Secure/burst rip loop, damage mapping, offset correction, checksums, WAV staging |
+| `Net` | HTTP plumbing shared by the web-service clients |
 | `Metadata` | DiscID, MusicBrainz WS/2, release scoring, Cover Art Archive, CD-TEXT |
 | `Verification` | CUETools DB client and rip verdicts |
 | `Encoding` | Core Audio FLAC/ALAC/AAC encoders + pure-Swift FLAC tagger |
 | `Naming` | Filename templates and path sanitization |
 | `Transfer` | Local-folder and SFTP destinations, Keychain |
-| `SpindleCore` | The pipeline coordinator orchestrating all of the above |
+| `SpindleCore` | The pipeline coordinator orchestrating all of the above, plus the album encoder and lookup shared with the CLI |
 | `Spindle/` (app) | SwiftUI shell: main window, release picker, tag editor, Settings |
+| `site/` | The public website, published to GitHub Pages |
 
 Dependencies: [Citadel](https://github.com/orlandos-nl/Citadel) (MIT) for SFTP,
 and [Sparkle](https://github.com/sparkle-project/Sparkle) for in-app updates.
