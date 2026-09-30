@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spindle — accurate, hands-off CD ripping for macOS</title>
+  <meta name="description" content="Insert a disc. Spindle rips it accurately, verifies it against the CUETools database, tags it from MusicBrainz with cover art, encodes to FLAC, ALAC or AAC and delivers it to your library — then ejects for the next one.">
+  <meta property="og:title" content="Spindle — accurate, hands-off CD ripping for macOS">
+  <meta property="og:description" content="Insert a disc. Walk away. Spindle verifies, tags and delivers your CDs to your music library.">
+  <meta property="og:image" content="https://thijsw.github.io/spindle/img/screenshot.png">
+  <meta name="theme-color" content="#0d0c0b">
+  <link rel="icon" type="image/png" href="img/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="#top" aria-label="Spindle">
+      <img src="img/icon.png" alt="" width="28" height="28">
+      <span>Spindle</span>
+    </a>
+    <nav class="nav-links" aria-label="Site">
+      <a href="#how">How it works</a>
+      <a href="#accurate">Accuracy</a>
+      <a href="#faq">Questions</a>
+      <a href="https://github.com/thijsw/spindle">GitHub</a>
+    </nav>
+    <a class="btn btn-primary btn-sm" data-download href="https://github.com/thijsw/spindle/releases/latest">Download</a>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="disc" aria-hidden="true"><div class="disc-hub"></div></div>
+      <p class="eyebrow reveal"><span class="dot"></span>Version <span data-version>0.3</span> · notarized for macOS 14 and later</p>
+      <h1 class="reveal">Insert a disc.<br><em>Walk away.</em></h1>
+      <p class="lede reveal">Spindle rips your CDs bit-exactly, checks every track against a database of other people's rips, tags them from MusicBrainz with cover art, and delivers the album to your music server. Then it ejects and waits for the next one.</p>
+      <div class="cta reveal">
+        <a class="btn btn-primary" data-download href="https://github.com/thijsw/spindle/releases/latest">
+          <svg width="14" height="16" viewBox="0 0 14 17" aria-hidden="true"><path fill="currentColor" d="M11.6 9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.8-.8-3-.8C2.2 3.8.8 4.7 0 6.1c-1.6 2.8-.4 6.9 1.2 9.2.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.3 0 2.1-1.1 2.8-2.3.9-1.3 1.3-2.6 1.3-2.6s-2.5-1-2.6-3.7zM9.3 2.3c.6-.8 1.1-1.8 1-2.9-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.7-1 2.8 1 .1 2-.5 2.7-1.3z"/></svg>
+          <span data-download-label>Download for macOS</span>
+        </a>
+        <a class="btn btn-secondary" href="https://github.com/thijsw/spindle">View the source</a>
+      </div>
+      <figure class="window reveal">
+        <img src="img/screenshot.png" alt="Spindle ripping Nelly Furtado's Folklore: cover art on the left, a twelve-track list on the right with five tracks checked off and the sixth in progress." width="1200" height="817">
+      </figure>
+    </section>
+
+    <section class="band" id="accurate">
+      <div class="band-text">
+        <h2>Accurate by construction</h2>
+        <p>Spindle reads raw audio sectors straight from the drive, corrects for your drive's read offset, and re-reads anything the drive flags until consecutive reads agree. Then it proves the result: every track's checksum is compared with the CUETools Database, so a match means your rip is identical to rips made on other people's drives.</p>
+        <p class="muted">Drives that lie about errors, discs that need twenty minutes of retries, an unreadable track holding up the batch — Spindle has a plan for each, and the rip log in every album folder shows what it did.</p>
+      </div>
+      <pre class="riplog" aria-label="Excerpt of a Spindle rip log"><span class="c">Spindle 0.3.0 — rip log</span>
+<span class="k">Drive       </span>: Apple SuperDrive (HL-DT-ST DVDRW GX50N)
+<span class="k">Read offset </span>: +6 samples
+<span class="k">Rip mode    </span>: secure, verify-first
+
+<span class="k">Tracks</span>
+  01  CRC32 3A0F7C7D  CTDB 980621E5  <span class="ok">✓ verified</span>
+  02  CRC32 59E0D140  CTDB 59E0D140  <span class="ok">✓ verified</span>
+  03  CRC32 6854EE2E  CTDB 6854EE2E  <span class="ok">✓ verified</span>
+  <span class="c">…</span>
+  12  CRC32 FCEFFF5B  CTDB 6891F2C7  <span class="ok">✓ verified</span>
+
+<span class="k">Verification</span>: <span class="ok">12/12 tracks verified</span> (CTDB, 110 entries)</pre>
+    </section>
+
+    <section class="how" id="how">
+      <h2>One disc at a time, without you</h2>
+      <p class="lede">The drive is the only bottleneck, so Spindle keeps it busy. While one album encodes and uploads, the next disc is already ripping.</p>
+      <ol class="steps">
+        <li><span class="n">01</span><h3>Detect &amp; rip</h3><p>The disc is claimed the moment it appears, read raw with C2 error pointers, and staged as WAV.</p></li>
+        <li><span class="n">02</span><h3>Identify</h3><p>The MusicBrainz DiscID is looked up while the rip runs. Several pressings? You pick — the rip never waits for you.</p></li>
+        <li><span class="n">03</span><h3>Verify &amp; eject</h3><p>Checksums are compared with the CUETools Database; only what it can't vouch for is re-read. Then the disc pops out.</p></li>
+        <li><span class="n">04</span><h3>Encode &amp; deliver</h3><p>FLAC, ALAC or AAC with full Picard-style tags and art, uploaded to a folder or over SFTP into your library.</p></li>
+      </ol>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h3>Tags a librarian would approve</h3>
+        <p>Album, artist, sort names, label, catalog number, barcode, ISRC, release country and every MusicBrainz identifier — the same tag set Picard writes, in FLAC and in M4A. Cover art comes from the Cover Art Archive, embedded and saved as <code>cover.jpg</code>.</p>
+      </article>
+      <article class="card">
+        <h3>Built for Navidrome</h3>
+        <p>Deliver straight to your server over SFTP, or to a folder on a mounted NAS share. Files land under a hidden name and are renamed when complete, so a library scanner never sees half a track. SSH host keys are pinned on first contact.</p>
+      </article>
+      <article class="card">
+        <h3>Your names, your layout</h3>
+        <p>A small template language decides the folder and file names — <code>{albumartist}/{album}[ ({year})]/{track} - {title}</code> by default, multi-disc aware, sanitized for SMB and Windows-friendly volumes.</p>
+      </article>
+      <article class="card">
+        <h3>Honest about damage</h3>
+        <p>A scratched track gets a time budget instead of holding the batch hostage. What couldn't be read is zero-filled, reported in the app, and written into the rip log and cue sheet beside the audio.</p>
+      </article>
+    </section>
+
+    <section class="faq" id="faq">
+      <h2>Questions</h2>
+      <dl>
+        <dt>Which drives work?</dt>
+        <dd>Any USB or built-in CD drive macOS can see, including the Apple SuperDrive. Spindle suggests the read offset for common drive families and confirms it through database verification.</dd>
+        <dt>Why isn't it on the App Store?</dt>
+        <dd>Accurate ripping needs raw access to the drive, which the App Store sandbox forbids. Spindle is a Developer ID app: signed, notarized, and updated in place.</dd>
+        <dt>What about MP3?</dt>
+        <dd>Not offered. FLAC and ALAC are lossless; AAC at 256 kbps covers the small-file case. All three come from Apple's own encoders.</dd>
+        <dt>Is it free?</dt>
+        <dd>Yes. The source is on GitHub, and the app updates itself when a new version is released.</dd>
+      </dl>
+    </section>
+
+    <section class="closing">
+      <h2>Feed it a shelf.</h2>
+      <a class="btn btn-primary" data-download href="https://github.com/thijsw/spindle/releases/latest"><span data-download-label>Download for macOS</span></a>
+      <p class="muted">Requires macOS 14 or later and an optical drive.</p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>© 2026 Thijs Wijnmaalen</span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/thijsw/spindle">Source</a>
+      <a href="https://github.com/thijsw/spindle/releases">Releases</a>
+      <a href="https://github.com/thijsw/spindle/issues">Report a problem</a>
+    </nav>
+  </footer>
+
+  <script>
+    // Point the download buttons at the latest DMG and show its version;
+    // the releases page stays as the fallback link.
+    fetch('https://api.github.com/repos/thijsw/spindle/releases/latest')
+      .then(r => r.ok ? r.json() : null)
+      .then(release => {
+        if (!release) return;
+        const dmg = (release.assets || []).find(a => a.name.endsWith('.dmg'));
+        const version = release.tag_name.replace(/^v/, '');
+        document.querySelectorAll('[data-version]').forEach(el => el.textContent = version);
+        if (!dmg) return;
+        document.querySelectorAll('[data-download]').forEach(a => a.href = dmg.browser_download_url);
+        document.querySelectorAll('[data-download-label]').forEach(el => el.textContent = 'Download Spindle ' + version);
+      })
+      .catch(() => {});
+  </script>
+</body>
+</html>

@@ -14,7 +14,7 @@ on:
 
 permissions:
   contents: write # create releases and upload assets
-  pages: write # publish the Sparkle appcast to GitHub Pages
+  pages: write # publish the site + Sparkle appcast to GitHub Pages
   id-token: write # required by actions/deploy-pages
 
 jobs:
@@ -174,14 +174,9 @@ jobs:
           SPARKLE_BIN="$RUNNER_TEMP/sparkle/bin" \
           Scripts/make-appcast.sh
 
-          # A tiny landing page so the Pages site root isn't a 404.
-          cat > _site/index.html <<'HTML'
-          <!doctype html><meta charset="utf-8"><title>Spindle updates</title>
-          <h1>Spindle</h1>
-          <p>This site hosts the Sparkle <a href="appcast.xml">appcast.xml</a>
-          auto-update feed. Downloads live on the
-          <a href="https://github.com/thijsw/spindle/releases">Releases page</a>.</p>
-          HTML
+          # The public site shares the Pages deployment with the feed
+          # (see pages.yml); ship it so a release deploy never blanks it.
+          cp -R site/. _site/
 
           echo "generated=true" >> "$GITHUB_OUTPUT"
 

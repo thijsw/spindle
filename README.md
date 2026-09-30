@@ -23,6 +23,8 @@ feed it the next disc.
 
 ## Download
 
+Website: [thijsw.github.io/spindle](https://thijsw.github.io/spindle/)
+
 Download the latest signed, notarized `.dmg` from the
 [**Releases**](https://github.com/thijsw/spindle/releases/latest) page, open it,
 and drag **Spindle** into Applications. Requires macOS 14 or later. Once
