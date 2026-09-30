@@ -49,7 +49,13 @@ enum RipCommand {
         // Unmount the cddafs volume so raw reads don't race the filesystem,
         // and keep it from re-mounting mid-rip.
         let monitor = try DriveMonitor()
-        try? await monitor.hold(bsdName: bsd)
+        do {
+            try await monitor.hold(bsdName: bsd)
+        } catch {
+            // Another reader (Music.app importing the CD, Finder) keeps the
+            // volume busy — and will fight the rip for the drive head.
+            print("warning: could not unmount the disc (\(error)); another app may be reading it, which makes the rip slow and noisy.")
+        }
         defer { monitor.release(bsdName: bsd) }
 
         var (drive, toc) = try await openDisc(bsdName: bsd)

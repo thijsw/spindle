@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:spindle}/SpindleCore",
+      "name": "Debug spindle-cli (SpindleCore)",
+      "target": "spindle-cli",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug spindle-cli (SpindleCore)"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:spindle}/SpindleCore",
+      "name": "Release spindle-cli (SpindleCore)",
+      "target": "spindle-cli",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release spindle-cli (SpindleCore)"
+    }
+  ]
+}

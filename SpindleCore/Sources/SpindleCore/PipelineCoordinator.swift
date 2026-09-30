@@ -360,7 +360,17 @@ public actor PipelineCoordinator {
 
         do {
             setStage(job, .readingTOC)
-            try? await dependencies.drive.hold(bsdName: job.bsdName)
+            do {
+                try await dependencies.drive.hold(bsdName: job.bsdName)
+            } catch {
+                // Another reader (Music.app auto-importing the CD, a Finder
+                // window) keeps the volume busy and will fight the rip for
+                // the drive head: it still works, at a fraction of the speed.
+                notify(
+                    title: "Another app is using the disc",
+                    body: "Spindle could not unmount it (\(error)). Quit Music or close Finder windows on the CD, or the rip will be slow and noisy."
+                )
+            }
             let device = try dependencies.deviceFactory(job.bsdName)
 
             let toc = try await TOC.parse(fullTOC: device.readFullTOC())

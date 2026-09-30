@@ -82,9 +82,22 @@ public actor CDDrive: CDDeviceIO {
     }
 
     private func readTOC(format: UInt8) throws -> Data {
-        // The request length is a UInt16, and a full CD-TEXT block set
-        // (format 5: 8 blocks × 256 packs × 18 B ≈ 36 KB) needs most of it.
-        let capacity = Int(UInt16.max)
+        // Drives reject oversized TOC requests outright (the SuperDrive
+        // answers a 64 KB request with EIO), so ask small first and grow
+        // only when the answer filled the buffer — a full CD-TEXT block set
+        // (format 5) can reach ~36 KB, but a plain TOC fits in 4 KB.
+        var capacity = 4096
+        while true {
+            let (data, length) = try readTOC(format: format, capacity: capacity)
+            if length < capacity || capacity >= Int(UInt16.max) { return data }
+            let larger = min(capacity * 4, Int(UInt16.max))
+            guard let grown = try? readTOC(format: format, capacity: larger) else { return data }
+            if grown.length < larger { return grown.data }
+            capacity = larger
+        }
+    }
+
+    private func readTOC(format: UInt8, capacity: Int) throws -> (data: Data, length: Int) {
         var buffer = Data(count: capacity)
         var actualLength: UInt16 = 0
         let code = buffer.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) -> Int32 in
@@ -101,7 +114,7 @@ public actor CDDrive: CDDeviceIO {
         guard code == 0 else {
             throw DiscDriveError.ioctlFailed(name: "DKIOCCDREADTOC(format \(format))", code: code)
         }
-        return buffer.prefix(Int(actualLength))
+        return (buffer.prefix(Int(actualLength)), Int(actualLength))
     }
 
     public func setSpeed(_ kbps: UInt16) throws {

@@ -91,6 +91,12 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
   [start, nextStart). End-to-end hardware validation passed: full disc
   ripped + 13/13 CTDB-verified in 5.3 min, encoded to a tagged FLAC
   library.
+- A rip that is suddenly slow (~1×) AND makes the drive click/seek loudly
+  means a second reader: Music.app auto-imports an inserted CD (holds
+  `/dev/rdisk4` open, unmount dissents, so the hold silently fails). Check
+  `lsof /dev/rdisk4`; the fix is quitting Music (or Music → Settings →
+  General → "On CD insert: Ignore"). The engine sample shows 98% time inside
+  `ciocd_read` with uniform ~1.5 s reads, no retries — found 2026-09-30.
 - Never diagnose drive stalls by theorizing: `sample <pid> 5` while hung
   shows exactly which engine path is blocked in ioctl.
 - UI hang post-mortem (the Settings beach-ball): the root cause was a
@@ -127,6 +133,10 @@ SwiftUI app shell built by `Spindle.xcodeproj`.
   do the same in any new audio loop.
 - DKIOCCDREAD `offset` is `LBA × 2352` regardless of which sector areas are
   requested; returned per-sector layout is audio(2352) + C2(294) + subQ(16).
+- DKIOCCDREADTOC with a 64 KB buffer fails with EIO on the SuperDrive (found
+  in the 2026-09-30 smoke test — the disc looked unreadable). `CDDrive.readTOC`
+  asks for 4 KB and only grows the request when the answer filled the buffer
+  (CD-TEXT, format 5, can need ~36 KB).
 - TOC parsing uses `formatAsTime=1` (MSF) and `LBA = MSF − 150`; MusicBrainz
   offsets are `LBA + 150`; CTDB toc param is plain LBAs with data tracks
   prefixed `-`, lead-out appended.
