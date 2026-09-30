@@ -17,13 +17,13 @@ feed it the next disc.
 ![Swift](https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white)
 ![Developer ID](https://img.shields.io/badge/Developer%20ID-not%20sandboxed-blue)
 
+**[thijsw.github.io/spindle](https://thijsw.github.io/spindle/)** · [Download the latest release](https://github.com/thijsw/spindle/releases/latest)
+
 <img src="docs/screenshot.png" alt="Spindle waiting for a disc" width="720">
 
 </div>
 
 ## Download
-
-Website: [thijsw.github.io/spindle](https://thijsw.github.io/spindle/)
 
 Download the latest signed, notarized `.dmg` from the
 [**Releases**](https://github.com/thijsw/spindle/releases/latest) page, open it,
