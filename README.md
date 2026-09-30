@@ -16,6 +16,7 @@ feed it the next disc.
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white)
 ![Developer ID](https://img.shields.io/badge/Developer%20ID-not%20sandboxed-blue)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **[thijsw.github.io/spindle](https://thijsw.github.io/spindle/)** · [Download the latest release](https://github.com/thijsw/spindle/releases/latest)
 
@@ -157,4 +158,6 @@ machine-generated work, and please report anything that looks off.
 
 ## License
 
-© 2026 Thijs Wijnmaalen. All rights reserved (for now).
+[MIT](LICENSE) — © 2026 Thijs Wijnmaalen. Spindle's dependencies are
+MIT-licensed too ([Citadel](https://github.com/orlandos-nl/Citadel) and
+[Sparkle](https://github.com/sparkle-project/Sparkle)).
